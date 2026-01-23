@@ -1,1 +1,1 @@
-pydcm1==0.1
+pydcm1 @ git+https://github.com/johnno/pydcm1.git@hack-it-together
