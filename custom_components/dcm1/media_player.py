@@ -1,0 +1,230 @@
+"""Platform for media_player integration."""
+
+from __future__ import annotations
+
+import logging
+
+from pydcm1.listener import SourceChangeListener
+from pydcm1.mixer import Mixer
+
+from homeassistant.components.media_player import (
+    MediaPlayerDeviceClass,
+    MediaPlayerEntity,
+    MediaPlayerEntityFeature,
+    MediaPlayerState,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_NAME
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Add media_player for passed config_entry in HA."""
+    mixer: Mixer = hass.data[DOMAIN][config_entry.entry_id]
+
+    name = config_entry.data[CONF_NAME]
+
+    _LOGGER.debug("Setting up DCM1 entities for %s", name)
+
+    my_listener = MyListener()
+    mixer.register_listener(my_listener)
+    zones = []
+
+    # Setup the individual zone entities
+    for zone in mixer.zones:
+        _LOGGER.debug("Setting up zone entity for zone_id: %s, %s", zone.id, zone.name)
+        mixer_zone = MixerZone(zone.id, zone.name, mixer)
+        my_listener.add_mixer_zone_entity(zone.id, mixer_zone)
+        zones.append(mixer_zone)
+
+    # Request a status update so all listeners are notified with current status
+    _LOGGER.info("Refreshing status after setup")
+    _LOGGER.info("Total entities to add: %s", len(zones))
+    mixer.update_status()
+    async_add_entities(zones)
+
+
+class MyListener(SourceChangeListener):
+    """Listener to direct messages to correct entities."""
+
+    def __init__(self) -> None:
+        """Init."""
+        self.mixer_zone_entities: dict[int, MixerZone] = {}
+
+    def add_mixer_zone_entity(self, zone_id, entity):
+        """Add a Mixer Zone Entity."""
+        self.mixer_zone_entities[zone_id] = entity
+
+    def source_changed(self, zone_id: int, source_id: int):
+        """Source changed callback."""
+        _LOGGER.debug(
+            "Source changed Zone ID %s changed to source ID: %s", zone_id, source_id
+        )
+        entity = self.mixer_zone_entities.get(zone_id)
+        if entity:
+            _LOGGER.debug("Updating entity for source changed")
+            entity.set_source(source_id)
+
+    def zone_label_changed(self, zone_id: int, label: str):
+        """Zone label changed callback."""
+        _LOGGER.debug("Zone label changed for Zone ID %s to: %s", zone_id, label)
+        entity = self.mixer_zone_entities.get(zone_id)
+        if entity:
+            entity.set_name(label)
+
+    def source_label_changed(self, source_id: int, label: str):
+        """Source label changed callback."""
+        _LOGGER.debug("Source label changed for Source ID %s to: %s", source_id, label)
+        # Update all zone entities with new source list
+        for entity in self.mixer_zone_entities.values():
+            entity.update_source_list()
+
+    def volume_level_changed(self, zone_id: int, level):
+        """Volume level changed callback."""
+        _LOGGER.debug("Volume level changed for Zone ID %s to: %s", zone_id, level)
+        entity = self.mixer_zone_entities.get(zone_id)
+        if entity:
+            entity.set_volume(level)
+
+    def connected(self):
+        """Mixer connected callback. No action as status will be updated."""
+
+    def disconnected(self):
+        """Mixer disconnected callback."""
+        _LOGGER.warning("DCM1 Mixer disconnected")
+        for entity in self.mixer_zone_entities.values():
+            _LOGGER.debug("Updating %s", entity)
+            entity.set_state(MediaPlayerState.UNAVAILABLE)
+
+    def error(self, error_message: str):
+        """Error callback not required for us."""
+
+    def source_change_requested(self, zone_id: int, source_id: int):
+        """Ignore callback from API - not required for us."""
+
+
+class MixerZone(MediaPlayerEntity):
+    """Represents the Zones of the DCM1 Mixer."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_name = None
+
+    _attr_supported_features = (
+        MediaPlayerEntityFeature.SELECT_SOURCE
+        | MediaPlayerEntityFeature.VOLUME_SET
+        | MediaPlayerEntityFeature.VOLUME_STEP
+        | MediaPlayerEntityFeature.VOLUME_MUTE
+    )
+    _attr_device_class = MediaPlayerDeviceClass.RECEIVER
+
+    def __init__(self, zone_id, zone_name, mixer) -> None:
+        """Init."""
+        self.zone_id = zone_id
+        self._mixer: Mixer = mixer
+        self._attr_source_list = [s.name for s in mixer.sources]
+        self._attr_state = MediaPlayerState.ON
+        self._volume_level = None
+        self._is_volume_muted = False
+
+        # Use hostname as unique identifier since DCM1 doesn't have a MAC
+        unique_base = f"dcm1_{self._mixer.hostname.replace('.', '_')}"
+        self._attr_unique_id = f"{unique_base}_zone{zone_id}"
+
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, self._attr_unique_id)},
+            "name": zone_name,
+            "manufacturer": "Cloud Electronics",
+            "model": "DCM1 Zone Mixer",
+        }
+
+    def set_state(self, state):
+        """Set the state."""
+        self._attr_state = state
+        self.schedule_update_ha_state()
+
+    def set_name(self, name: str):
+        """Set the zone name."""
+        if self._attr_device_info:
+            self._attr_device_info["name"] = name
+        self.schedule_update_ha_state()
+
+    def set_source(self, source_id):
+        """Set the active source."""
+        # Find source by ID
+        source = next((s for s in self._mixer.sources if s.id == source_id), None)
+        if source:
+            self._attr_source = source.name
+            self.schedule_update_ha_state()
+
+    def update_source_list(self):
+        """Update the source list from mixer."""
+        self._attr_source_list = [s.name for s in self._mixer.sources]
+        self.schedule_update_ha_state()
+
+    def set_volume(self, level):
+        """Set the volume level from the mixer."""
+        if level == "mute":
+            self._is_volume_muted = True
+            self._attr_is_volume_muted = True
+        else:
+            self._is_volume_muted = False
+            self._attr_is_volume_muted = False
+            # Convert DCM1 level (0-61) to HA volume (0.0-1.0)
+            # Level 0 = 0dB (max), Level 61 = -61dB (min)
+            # Invert so 0 = quietest, 61 = loudest
+            self._volume_level = (61 - int(level)) / 61.0
+            self._attr_volume_level = self._volume_level
+        self.schedule_update_ha_state()
+
+    def select_source(self, source: str) -> None:
+        """Select the source."""
+        # Find source by name
+        source_obj = next((s for s in self._mixer.sources if s.name == source), None)
+        if source_obj:
+            self._mixer.set_zone_source(zone_id=self.zone_id, source_id=source_obj.id)
+        else:
+            _LOGGER.error(
+                "Invalid source: %s, valid sources %s", source, self._attr_source_list
+            )
+
+    def set_volume_level(self, volume: float) -> None:
+        """Set volume level (0.0 to 1.0)."""
+        # Convert HA volume (0.0-1.0) to DCM1 level (0-61)
+        # HA 0.0 = quietest = DCM1 61, HA 1.0 = loudest = DCM1 0
+        level = int(61 - (volume * 61))
+        level = max(0, min(61, level))  # Clamp to valid range
+        self._mixer.set_volume(zone_id=self.zone_id, level=level)
+
+    def volume_up(self) -> None:
+        """Increase volume by one step."""
+        if self._volume_level is not None:
+            new_volume = min(1.0, self._volume_level + 0.05)  # 5% increment
+            self.set_volume_level(new_volume)
+
+    def volume_down(self) -> None:
+        """Decrease volume by one step."""
+        if self._volume_level is not None:
+            new_volume = max(0.0, self._volume_level - 0.05)  # 5% decrement
+            self.set_volume_level(new_volume)
+
+    def mute_volume(self, mute: bool) -> None:
+        """Mute or unmute the volume."""
+        if mute:
+            self._mixer.set_volume(zone_id=self.zone_id, level=62)  # 62 = mute
+        else:
+            # Unmute to last known level, or default to -20dB (level 20)
+            if self._volume_level is not None:
+                level = int(61 - (self._volume_level * 61))
+            else:
+                level = 20  # Default to -20dB
+            self._mixer.set_volume(zone_id=self.zone_id, level=level)

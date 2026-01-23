@@ -1,0 +1,17 @@
+{
+  "domain": "dcm1",
+  "name": "Cloud DCM1 Zone Mixer",
+  "codeowners": ["@johnno"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/johnno/hacs-dcm1",
+  "issue_tracker": "https://github.com/johnno/hacs-dcm1/issues",
+  "homekit": {},
+  "iot_class": "local_push",
+  "requirements": [
+    "pydcm1 @ git+https://github.com/johnno/pydcm1.git@feature/hack-it-together"
+  ],
+  "ssdp": [],
+  "version": "0.1",
+  "zeroconf": []
+}
