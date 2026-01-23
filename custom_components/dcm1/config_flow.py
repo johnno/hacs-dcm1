@@ -6,7 +6,7 @@ from asyncio import timeout
 import logging
 from typing import Any
 
-from pydcm1.mixer import Mixer
+from pydcm1.mixer import DCM1Mixer
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
@@ -33,7 +33,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
 
-    mixer = Mixer(hostname=data[CONF_HOST], port=data[CONF_PORT])
+    mixer = DCM1Mixer(hostname=data[CONF_HOST], port=data[CONF_PORT])
 
     try:
         async with timeout(5.0):

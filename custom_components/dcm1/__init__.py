@@ -6,7 +6,7 @@ from asyncio import timeout
 import logging
 
 from pydcm1.listener import LoggingListener
-from pydcm1.mixer import Mixer
+from pydcm1.mixer import DCM1Mixer
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, Platform
@@ -24,7 +24,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hostname = entry.data[CONF_HOST]
     port = entry.data[CONF_PORT]
 
-    mixer = Mixer(hostname, port)
+    mixer = DCM1Mixer(hostname, port)
     try:
         mixer.register_listener(LoggingListener())
         async with timeout(5.0):
@@ -42,7 +42,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    mixer: Mixer = hass.data[DOMAIN][entry.entry_id]
+    mixer: DCM1Mixer = hass.data[DOMAIN][entry.entry_id]
     mixer.close()
 
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from pydcm1.listener import SourceChangeListener
-from pydcm1.mixer import Mixer
+from pydcm1.mixer import DCM1Mixer
 
 from homeassistant.components.media_player import (
     MediaPlayerDeviceClass,
@@ -29,7 +29,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Add media_player for passed config_entry in HA."""
-    mixer: Mixer = hass.data[DOMAIN][config_entry.entry_id]
+    mixer: DCM1Mixer = hass.data[DOMAIN][config_entry.entry_id]
 
     name = config_entry.data[CONF_NAME]
 
@@ -130,7 +130,7 @@ class MixerZone(MediaPlayerEntity):
     def __init__(self, zone_id, zone_name, mixer) -> None:
         """Init."""
         self.zone_id = zone_id
-        self._mixer: Mixer = mixer
+        self._mixer: DCM1Mixer = mixer
         self._attr_source_list = [s.name for s in mixer.sources]
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None
