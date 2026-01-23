@@ -105,6 +105,10 @@ class MyListener(SourceChangeListener):
             _LOGGER.debug("Updating %s", entity)
             entity.set_state(MediaPlayerState.UNAVAILABLE)
 
+    def power_changed(self, power: bool):
+        """Power changed callback - DCM1 has physical switch only, no power control."""
+        pass
+
     def error(self, error_message: str):
         """Error callback not required for us."""
 
