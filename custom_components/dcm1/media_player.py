@@ -102,12 +102,15 @@ async def async_setup_entry(
 
     # Setup entities for enabled groups only
     _LOGGER.info("Checking groups for entity creation: %s groups found", len(mixer.groups_by_id))
+    _LOGGER.info("DEBUG: _group_line_inputs_map contents: %s", mixer.protocol._group_line_inputs_map)
     for group_id, group in mixer.groups_by_id.items():
         _LOGGER.info("Group %s: name='%s', enabled=%s, zones=%s", group.id, group.name, group.enabled, group.zones)
         if group.enabled:
             _LOGGER.info("Creating group entity for group_id: %s, %s (ENABLED)", group.id, group.name)
             # Get enabled line inputs for this group
             enabled_inputs = mixer.protocol.get_enabled_group_line_inputs(group_id)
+            _LOGGER.info("DEBUG: Group %s enabled_inputs returned: %s", group_id, enabled_inputs)
+            _LOGGER.info("DEBUG: Type of enabled_inputs: %s, bool check: %s", type(enabled_inputs), bool(enabled_inputs))
             mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs)
             my_listener.add_mixer_group_entity(group.id, mixer_group)
             entities.append(mixer_group)
