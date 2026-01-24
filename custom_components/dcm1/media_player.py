@@ -18,7 +18,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import CONF_ENTITY_NAME_SUFFIX, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +35,8 @@ async def async_setup_entry(
 
     _LOGGER.debug("Setting up DCM1 entities for %s", name)
 
+    entity_name_suffix = config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, "")
+    
     my_listener = MyListener()
     mixer.register_listener(my_listener)
     zones = []
@@ -42,7 +44,7 @@ async def async_setup_entry(
     # Setup the individual zone entities
     for zone_id, zone in mixer.zones_by_id.items():
         _LOGGER.debug("Setting up zone entity for zone_id: %s, %s", zone.id, zone.name)
-        mixer_zone = MixerZone(zone.id, zone.name, mixer)
+        mixer_zone = MixerZone(zone.id, zone.name, mixer, entity_name_suffix)
         my_listener.add_mixer_zone_entity(zone.id, mixer_zone)
         zones.append(mixer_zone)
 
@@ -131,10 +133,11 @@ class MixerZone(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, zone_id, zone_name, mixer) -> None:
+    def __init__(self, zone_id, zone_name, mixer, entity_name_suffix="") -> None:
         """Init."""
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
+        self._entity_name_suffix = entity_name_suffix
         self._attr_source_list = [s.name for s in mixer.sources_by_id.values()]
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None
@@ -149,9 +152,14 @@ class MixerZone(MediaPlayerEntity):
         unique_base = f"dcm1_{self._mixer.hostname.replace('.', '_')}"
         self._attr_unique_id = f"{unique_base}_zone{zone_id}"
 
+        # Apply entity name suffix if provided
+        display_name = zone_name
+        if entity_name_suffix:
+            display_name = f"{zone_name} {entity_name_suffix}"
+
         self._attr_device_info = {
             "identifiers": {(DOMAIN, self._attr_unique_id)},
-            "name": zone_name,
+            "name": display_name,
             "manufacturer": "Cloud Electronics",
             "model": "DCM1 Zone Mixer",
         }
@@ -164,7 +172,10 @@ class MixerZone(MediaPlayerEntity):
     def set_name(self, name: str):
         """Set the zone name."""
         if self._attr_device_info:
-            self._attr_device_info["name"] = name
+            display_name = name
+            if self._entity_name_suffix:
+                display_name = f"{name} {self._entity_name_suffix}"
+            self._attr_device_info["name"] = display_name
         self.schedule_update_ha_state()
 
     def set_source(self, source_id):

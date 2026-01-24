@@ -3,3 +3,5 @@
 DOMAIN = "dcm1"
 
 DEFAULT_PORT = 4999
+
+CONF_ENTITY_NAME_SUFFIX = "entity_name_suffix"
