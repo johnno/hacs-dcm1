@@ -47,6 +47,15 @@ async def async_setup_entry(
     # Add extra buffer for network latency
     await asyncio.sleep(3.0)
     
+    # Query line input enables for all zones BEFORE creating entities
+    _LOGGER.info("Querying line input enables for all zones")
+    for zone_id in mixer.zones_by_id.keys():
+        mixer.query_line_inputs(zone_id)
+    
+    # Wait for line input queries to complete (8 zones * 8 line inputs = 64 queries * 0.1s = 6.4s)
+    # Add extra buffer for network latency
+    await asyncio.sleep(7.0)
+    
     my_listener = MyListener()
     mixer.register_listener(my_listener)
     zones = []
@@ -54,7 +63,9 @@ async def async_setup_entry(
     # Setup the individual zone entities
     for zone_id, zone in mixer.zones_by_id.items():
         _LOGGER.debug("Setting up zone entity for zone_id: %s, %s", zone.id, zone.name)
-        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix)
+        # Get enabled line inputs for this zone
+        enabled_inputs = mixer.get_enabled_line_inputs(zone_id)
+        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs)
         my_listener.add_mixer_zone_entity(zone.id, mixer_zone)
         zones.append(mixer_zone)
 
@@ -62,10 +73,6 @@ async def async_setup_entry(
     _LOGGER.info("Refreshing status after setup")
     _LOGGER.info("Total entities to add: %s", len(zones))
     mixer.update_status()
-    
-    # Query line input enables for all zones to filter source lists
-    for zone_id in mixer.zones_by_id.keys():
-        mixer.query_line_inputs(zone_id)
     
     async_add_entities(zones)
 
@@ -155,13 +162,13 @@ class MixerZone(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="") -> None:
+    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None) -> None:
         """Init."""
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
         self._use_zone_labels = use_zone_labels
         self._entity_name_suffix = entity_name_suffix
-        self._enabled_line_inputs: dict[int, bool] = {}
+        self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
         self._attr_source_list = self._build_source_list()
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None
