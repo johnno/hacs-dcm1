@@ -449,19 +449,26 @@ class MixerGroup(MediaPlayerEntity):
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None
         self._is_volume_muted = False
+        self._attr_is_volume_muted = False
+        self._attr_volume_level = None
         
         # Try to get initial volume level
         initial_volume = mixer.protocol.get_group_volume_level(group_id)
+        _LOGGER.info(f"Group {group_id} initial volume from protocol: {initial_volume}")
         if initial_volume is not None:
             if initial_volume == "mute":
                 self._is_volume_muted = True
                 self._attr_is_volume_muted = True
+                _LOGGER.info(f"Group {group_id} is muted")
             else:
                 self._is_volume_muted = False
                 self._attr_is_volume_muted = False
                 # Convert DCM1 level (0-61) to HA volume (0.0-1.0)
                 self._volume_level = (61 - int(initial_volume)) / 61.0
                 self._attr_volume_level = self._volume_level
+                _LOGGER.info(f"Group {group_id} volume set to {self._attr_volume_level} (level {initial_volume})")
+        else:
+            _LOGGER.warning(f"Group {group_id} initial volume is None - volume data not loaded yet")
 
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
         unique_base = f"dcm1_{self._mixer.hostname.replace('.', '_')}"
