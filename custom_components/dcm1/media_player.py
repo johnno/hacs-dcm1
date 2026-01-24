@@ -44,17 +44,31 @@ async def async_setup_entry(
     mixer.query_all_labels()
     
     # Wait for label queries to complete (with 10s timeout)
-    labels_loaded = await mixer.wait_for_zone_source_labels(timeout=10.0)
-    if not labels_loaded:
-        _LOGGER.warning("Timeout waiting for zone/source labels - some names may not be correct")
+    if hasattr(mixer, 'wait_for_zone_source_labels'):
+        _LOGGER.info("Waiting for zone/source labels...")
+        labels_loaded = await mixer.wait_for_zone_source_labels(timeout=10.0)
+        if not labels_loaded:
+            _LOGGER.warning("Timeout waiting for zone/source labels - some names may not be correct")
+        else:
+            _LOGGER.info("Zone/source labels loaded successfully")
+    else:
+        _LOGGER.warning("wait_for_zone_source_labels not available - using sleep fallback")
+        await asyncio.sleep(3.0)
     
     # Query group information (labels, status, volume, and line inputs)
     _LOGGER.info("Querying group information")
     mixer.query_all_groups()
     # Wait for group data to be received (with 10s timeout)
-    groups_loaded = await mixer.wait_for_group_data(timeout=10.0)
-    if not groups_loaded:
-        _LOGGER.warning("Timeout waiting for group data - some groups may not be available")
+    if hasattr(mixer, 'wait_for_group_data'):
+        _LOGGER.info("Waiting for group data...")
+        groups_loaded = await mixer.wait_for_group_data(timeout=10.0)
+        if not groups_loaded:
+            _LOGGER.warning("Timeout waiting for group data - some groups may not be available")
+        else:
+            _LOGGER.info("Group data loaded successfully")
+    else:
+        _LOGGER.warning("wait_for_group_data not available - using sleep fallback")
+        await asyncio.sleep(5.0)
     
     # Query line input enables for all zones BEFORE creating entities
     _LOGGER.info("Querying line input enables for all zones")
@@ -62,9 +76,16 @@ async def async_setup_entry(
         mixer.query_line_inputs(zone_id)
     
     # Wait for line input queries to complete (with 10s timeout)
-    line_inputs_loaded = await mixer.wait_for_zone_line_inputs(timeout=10.0)
-    if not line_inputs_loaded:
-        _LOGGER.warning("Timeout waiting for zone line inputs - some zones may have incomplete source lists")
+    if hasattr(mixer, 'wait_for_zone_line_inputs'):
+        _LOGGER.info("Waiting for zone line inputs...")
+        line_inputs_loaded = await mixer.wait_for_zone_line_inputs(timeout=10.0)
+        if not line_inputs_loaded:
+            _LOGGER.warning("Timeout waiting for zone line inputs - some zones may have incomplete source lists")
+        else:
+            _LOGGER.info("Zone line inputs loaded successfully")
+    else:
+        _LOGGER.warning("wait_for_zone_line_inputs not available - using sleep fallback")
+        await asyncio.sleep(7.0)
     
     my_listener = MyListener()
     mixer.register_listener(my_listener)
@@ -80,16 +101,18 @@ async def async_setup_entry(
         entities.append(mixer_zone)
 
     # Setup entities for enabled groups only
+    _LOGGER.info("Checking groups for entity creation: %s groups found", len(mixer.groups_by_id))
     for group_id, group in mixer.groups_by_id.items():
+        _LOGGER.info("Group %s: name='%s', enabled=%s, zones=%s", group.id, group.name, group.enabled, group.zones)
         if group.enabled:
-            _LOGGER.debug("Setting up group entity for group_id: %s, %s (ENABLED)", group.id, group.name)
+            _LOGGER.info("Creating group entity for group_id: %s, %s (ENABLED)", group.id, group.name)
             # Get enabled line inputs for this group
             enabled_inputs = mixer.protocol.get_enabled_group_line_inputs(group_id)
             mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs)
             my_listener.add_mixer_group_entity(group.id, mixer_group)
             entities.append(mixer_group)
         else:
-            _LOGGER.debug("Skipping DISABLED group: group_id: %s, %s", group.id, group.name)
+            _LOGGER.info("Skipping DISABLED group: group_id: %s, %s", group.id, group.name)
 
     # Request a status update so all listeners are notified with current status
     _LOGGER.info("Refreshing status after setup")
