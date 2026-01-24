@@ -92,10 +92,13 @@ async def async_setup_entry(
     entities = []
 
     # Setup the individual zone entities
+    _LOGGER.info("DEBUG: _zone_line_inputs_map contents: %s", mixer.protocol._zone_line_inputs_map)
     for zone_id, zone in mixer.zones_by_id.items():
         _LOGGER.debug("Setting up zone entity for zone_id: %s, %s", zone.id, zone.name)
         # Get enabled line inputs for this zone
         enabled_inputs = mixer.get_enabled_line_inputs(zone_id)
+        _LOGGER.info("DEBUG: Zone %s enabled_inputs returned: %s", zone_id, enabled_inputs)
+        _LOGGER.info("DEBUG: Zone %s type: %s, bool: %s, len: %s", zone_id, type(enabled_inputs), bool(enabled_inputs), len(enabled_inputs) if enabled_inputs else 0)
         mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs)
         my_listener.add_mixer_zone_entity(zone.id, mixer_zone)
         entities.append(mixer_zone)
