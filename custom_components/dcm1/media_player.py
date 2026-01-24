@@ -18,7 +18,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CONF_ENTITY_NAME_SUFFIX, DOMAIN
+from .const import CONF_ENTITY_NAME_SUFFIX, CONF_USE_ZONE_LABELS, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ async def async_setup_entry(
 
     _LOGGER.debug("Setting up DCM1 entities for %s", name)
 
+    use_zone_labels = config_entry.data.get(CONF_USE_ZONE_LABELS, True)
     entity_name_suffix = config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, "")
     
     my_listener = MyListener()
@@ -44,7 +45,7 @@ async def async_setup_entry(
     # Setup the individual zone entities
     for zone_id, zone in mixer.zones_by_id.items():
         _LOGGER.debug("Setting up zone entity for zone_id: %s, %s", zone.id, zone.name)
-        mixer_zone = MixerZone(zone.id, zone.name, mixer, entity_name_suffix)
+        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix)
         my_listener.add_mixer_zone_entity(zone.id, mixer_zone)
         zones.append(mixer_zone)
 
@@ -145,10 +146,11 @@ class MixerZone(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, zone_id, zone_name, mixer, entity_name_suffix="") -> None:
+    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="") -> None:
         """Init."""
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
+        self._use_zone_labels = use_zone_labels
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = {}
         self._attr_source_list = self._build_source_list()
@@ -165,10 +167,14 @@ class MixerZone(MediaPlayerEntity):
         unique_base = f"dcm1_{self._mixer.hostname.replace('.', '_')}"
         self._attr_unique_id = f"{unique_base}_zone{zone_id}"
 
-        # Apply entity name suffix if provided
-        display_name = zone_name
+        # Build display name based on configuration
+        if use_zone_labels:
+            display_name = zone_name
+        else:
+            display_name = f"Zone {zone_id}"
+        
         if entity_name_suffix:
-            display_name = f"{zone_name} {entity_name_suffix}"
+            display_name = f"{display_name} {entity_name_suffix}"
 
         self._attr_device_info = {
             "identifiers": {(DOMAIN, self._attr_unique_id)},
@@ -185,9 +191,14 @@ class MixerZone(MediaPlayerEntity):
     def set_name(self, name: str):
         """Set the zone name."""
         if self._attr_device_info:
-            display_name = name
+            if self._use_zone_labels:
+                display_name = name
+            else:
+                display_name = f"Zone {self.zone_id}"
+            
             if self._entity_name_suffix:
-                display_name = f"{name} {self._entity_name_suffix}"
+                display_name = f"{display_name} {self._entity_name_suffix}"
+            
             self._attr_device_info["name"] = display_name
         self.schedule_update_ha_state()
 
