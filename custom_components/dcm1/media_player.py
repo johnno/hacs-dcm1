@@ -208,6 +208,13 @@ class MyListener(SourceChangeListener):
         if entity:
             entity.set_volume(level)
 
+    def group_source_changed(self, group_id: int, source_id: int):
+        """Group source changed callback."""
+        _LOGGER.debug("Group source changed for Group ID %s to source ID: %s", group_id, source_id)
+        entity = self.mixer_group_entities.get(group_id)
+        if entity:
+            entity.set_source(source_id)
+
     def connected(self):
         """Mixer connected callback. No action as status will be updated."""
 
