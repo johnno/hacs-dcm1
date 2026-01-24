@@ -139,6 +139,11 @@ class MixerZone(MediaPlayerEntity):
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None
         self._is_volume_muted = False
+        
+        # Try to get initial source state
+        initial_source_id = mixer.status_of_zone(zone_id)
+        if initial_source_id and initial_source_id in mixer.sources_by_id:
+            self._attr_source = mixer.sources_by_id[initial_source_id].name
 
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
         unique_base = f"dcm1_{self._mixer.hostname.replace('.', '_')}"
