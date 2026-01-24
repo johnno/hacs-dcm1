@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from pydcm1.listener import SourceChangeListener
@@ -37,6 +38,14 @@ async def async_setup_entry(
 
     use_zone_labels = config_entry.data.get(CONF_USE_ZONE_LABELS, True)
     entity_name_suffix = config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, "")
+    
+    # Query zone and source labels BEFORE creating entities
+    _LOGGER.info("Querying zone labels, source labels, and volume levels")
+    mixer.query_all_labels()
+    
+    # Wait for label queries to complete (8 zones + 8 sources + 8 volumes = 24 queries * 0.1s = 2.4s)
+    # Add extra buffer for network latency
+    await asyncio.sleep(3.0)
     
     my_listener = MyListener()
     mixer.register_listener(my_listener)
