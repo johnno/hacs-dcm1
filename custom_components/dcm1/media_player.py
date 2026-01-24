@@ -161,6 +161,12 @@ class MyListener(SourceChangeListener):
         # Update all zone entities with new source list
         for entity in self.mixer_zone_entities.values():
             entity.update_source_list()
+        # Update all group entities with new source list
+        for entity in self.mixer_group_entities.values():
+            entity.update_source_list()
+        # Update all group entities with new source list
+        for entity in self.mixer_group_entities.values():
+            entity.update_source_list()
 
     def line_inputs_changed(self, zone_id: int, enabled_inputs: dict[int, bool]):
         """Line inputs enabled status changed callback."""
@@ -495,6 +501,20 @@ class MixerGroup(MediaPlayerEntity):
             
             self._attr_device_info["name"] = display_name
         self.schedule_update_ha_state()
+    def set_source(self, source_id):
+        """Set the active source."""
+        # Find source by ID
+        source = self._mixer.sources_by_id.get(source_id)
+        if source:
+            self._attr_source = source.name
+            self.schedule_update_ha_state()
+    def set_source(self, source_id):
+        """Set the active source."""
+        # Find source by ID
+        source = self._mixer.sources_by_id.get(source_id)
+        if source:
+            self._attr_source = source.name
+            self.schedule_update_ha_state()
 
     def _build_source_list(self) -> list[str]:
         """Build filtered source list based on enabled line inputs."""
