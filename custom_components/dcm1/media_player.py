@@ -169,6 +169,9 @@ class MixerZone(MediaPlayerEntity):
         self._use_zone_labels = use_zone_labels
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
+        
+        _LOGGER.debug(f"Zone {zone_id} enabled_line_inputs: {self._enabled_line_inputs}")
+        
         self._attr_source_list = self._build_source_list()
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None
@@ -178,6 +181,11 @@ class MixerZone(MediaPlayerEntity):
         initial_source_id = mixer.status_of_zone(zone_id)
         if initial_source_id and initial_source_id in mixer.sources_by_id:
             self._attr_source = mixer.sources_by_id[initial_source_id].name
+        
+        # Try to get initial volume level
+        initial_volume = mixer.protocol.get_volume_level(zone_id)
+        if initial_volume is not None:
+            self.set_volume(initial_volume)
 
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
         unique_base = f"dcm1_{self._mixer.hostname.replace('.', '_')}"
@@ -230,7 +238,10 @@ class MixerZone(MediaPlayerEntity):
         """Build filtered source list based on enabled line inputs."""
         if not self._enabled_line_inputs:
             # If no line input data yet, show all sources
+            _LOGGER.warning(f"Zone {self.zone_id}: No line input data, showing all sources")
             return [s.name for s in self._mixer.sources_by_id.values()]
+        
+        _LOGGER.debug(f"Zone {self.zone_id}: Filtering sources with enabled inputs: {self._enabled_line_inputs}")
         
         # Filter to only show sources whose line input is enabled
         filtered_sources = []
@@ -239,9 +250,13 @@ class MixerZone(MediaPlayerEntity):
             if 1 <= source_id <= 8:
                 if self._enabled_line_inputs.get(source_id, False):
                     filtered_sources.append(source.name)
+                    _LOGGER.debug(f"Zone {self.zone_id}: Including source {source_id} ({source.name})")
+                else:
+                    _LOGGER.debug(f"Zone {self.zone_id}: Excluding source {source_id} ({source.name})")
             else:
                 filtered_sources.append(source.name)
         
+        _LOGGER.info(f"Zone {self.zone_id}: Final source list: {filtered_sources}")
         return filtered_sources
 
     def update_source_list(self):
