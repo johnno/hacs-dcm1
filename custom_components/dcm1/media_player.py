@@ -185,7 +185,15 @@ class MixerZone(MediaPlayerEntity):
         # Try to get initial volume level
         initial_volume = mixer.protocol.get_volume_level(zone_id)
         if initial_volume is not None:
-            self.set_volume(initial_volume)
+            if initial_volume == "mute":
+                self._is_volume_muted = True
+                self._attr_is_volume_muted = True
+            else:
+                self._is_volume_muted = False
+                self._attr_is_volume_muted = False
+                # Convert DCM1 level (0-61) to HA volume (0.0-1.0)
+                self._volume_level = (61 - int(initial_volume)) / 61.0
+                self._attr_volume_level = self._volume_level
 
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
         unique_base = f"dcm1_{self._mixer.hostname.replace('.', '_')}"
