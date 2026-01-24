@@ -52,6 +52,11 @@ async def async_setup_entry(
     _LOGGER.info("Refreshing status after setup")
     _LOGGER.info("Total entities to add: %s", len(zones))
     mixer.update_status()
+    
+    # Query line input enables for all zones to filter source lists
+    for zone_id in mixer.zones_by_id.keys():
+        mixer.query_line_inputs(zone_id)
+    
     async_add_entities(zones)
 
 
@@ -89,6 +94,13 @@ class MyListener(SourceChangeListener):
         # Update all zone entities with new source list
         for entity in self.mixer_zone_entities.values():
             entity.update_source_list()
+
+    def line_inputs_changed(self, zone_id: int, enabled_inputs: dict[int, bool]):
+        """Line inputs enabled status changed callback."""
+        _LOGGER.debug("Line inputs changed for Zone ID %s: %s", zone_id, enabled_inputs)
+        entity = self.mixer_zone_entities.get(zone_id)
+        if entity:
+            entity.update_enabled_inputs(enabled_inputs)
 
     def volume_level_changed(self, zone_id: int, level):
         """Volume level changed callback."""
@@ -138,7 +150,8 @@ class MixerZone(MediaPlayerEntity):
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
         self._entity_name_suffix = entity_name_suffix
-        self._attr_source_list = [s.name for s in mixer.sources_by_id.values()]
+        self._enabled_line_inputs: dict[int, bool] = {}
+        self._attr_source_list = self._build_source_list()
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None
         self._is_volume_muted = False
@@ -186,9 +199,33 @@ class MixerZone(MediaPlayerEntity):
             self._attr_source = source.name
             self.schedule_update_ha_state()
 
+    def _build_source_list(self) -> list[str]:
+        """Build filtered source list based on enabled line inputs."""
+        if not self._enabled_line_inputs:
+            # If no line input data yet, show all sources
+            return [s.name for s in self._mixer.sources_by_id.values()]
+        
+        # Filter to only show sources whose line input is enabled
+        filtered_sources = []
+        for source_id, source in self._mixer.sources_by_id.items():
+            # Only filter sources 1-8 (line inputs), allow any other sources
+            if 1 <= source_id <= 8:
+                if self._enabled_line_inputs.get(source_id, False):
+                    filtered_sources.append(source.name)
+            else:
+                filtered_sources.append(source.name)
+        
+        return filtered_sources
+
     def update_source_list(self):
         """Update the source list from mixer."""
-        self._attr_source_list = [s.name for s in self._mixer.sources_by_id.values()]
+        self._attr_source_list = self._build_source_list()
+        self.schedule_update_ha_state()
+
+    def update_enabled_inputs(self, enabled_inputs: dict[int, bool]):
+        """Update the enabled line inputs and refresh source list."""
+        self._enabled_line_inputs = enabled_inputs
+        self._attr_source_list = self._build_source_list()
         self.schedule_update_ha_state()
 
     def set_volume(self, level):
