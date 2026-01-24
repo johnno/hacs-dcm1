@@ -43,23 +43,28 @@ async def async_setup_entry(
     _LOGGER.info("Querying zone labels, source labels, and volume levels")
     mixer.query_all_labels()
     
-    # Wait for label queries to complete (8 zones + 8 sources + 8 volumes = 24 queries * 0.1s = 2.4s)
-    # Add extra buffer for network latency
-    await asyncio.sleep(3.0)
+    # Wait for label queries to complete (with 10s timeout)
+    labels_loaded = await mixer.wait_for_zone_source_labels(timeout=10.0)
+    if not labels_loaded:
+        _LOGGER.warning("Timeout waiting for zone/source labels - some names may not be correct")
     
     # Query group information (labels, status, volume, and line inputs)
     _LOGGER.info("Querying group information")
     mixer.query_all_groups()
-    await asyncio.sleep(5.0)  # Wait for 44 group commands (4 groups × 11)
+    # Wait for group data to be received (with 10s timeout)
+    groups_loaded = await mixer.wait_for_group_data(timeout=10.0)
+    if not groups_loaded:
+        _LOGGER.warning("Timeout waiting for group data - some groups may not be available")
     
     # Query line input enables for all zones BEFORE creating entities
     _LOGGER.info("Querying line input enables for all zones")
     for zone_id in mixer.zones_by_id.keys():
         mixer.query_line_inputs(zone_id)
     
-    # Wait for line input queries to complete (8 zones * 8 line inputs = 64 queries * 0.1s = 6.4s)
-    # Add extra buffer for network latency
-    await asyncio.sleep(7.0)
+    # Wait for line input queries to complete (with 10s timeout)
+    line_inputs_loaded = await mixer.wait_for_zone_line_inputs(timeout=10.0)
+    if not line_inputs_loaded:
+        _LOGGER.warning("Timeout waiting for zone line inputs - some zones may have incomplete source lists")
     
     my_listener = MyListener()
     mixer.register_listener(my_listener)
