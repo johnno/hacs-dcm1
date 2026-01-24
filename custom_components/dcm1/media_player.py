@@ -40,7 +40,7 @@ async def async_setup_entry(
     zones = []
 
     # Setup the individual zone entities
-    for zone in mixer.zones:
+    for zone_id, zone in mixer.zones_by_id.items():
         _LOGGER.debug("Setting up zone entity for zone_id: %s, %s", zone.id, zone.name)
         mixer_zone = MixerZone(zone.id, zone.name, mixer)
         my_listener.add_mixer_zone_entity(zone.id, mixer_zone)
@@ -135,7 +135,7 @@ class MixerZone(MediaPlayerEntity):
         """Init."""
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
-        self._attr_source_list = [s.name for s in mixer.sources]
+        self._attr_source_list = [s.name for s in mixer.sources_by_id.values()]
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None
         self._is_volume_muted = False
@@ -165,14 +165,14 @@ class MixerZone(MediaPlayerEntity):
     def set_source(self, source_id):
         """Set the active source."""
         # Find source by ID
-        source = next((s for s in self._mixer.sources if s.id == source_id), None)
+        source = self._mixer.sources_by_id.get(source_id)
         if source:
             self._attr_source = source.name
             self.schedule_update_ha_state()
 
     def update_source_list(self):
         """Update the source list from mixer."""
-        self._attr_source_list = [s.name for s in self._mixer.sources]
+        self._attr_source_list = [s.name for s in self._mixer.sources_by_id.values()]
         self.schedule_update_ha_state()
 
     def set_volume(self, level):
@@ -193,7 +193,7 @@ class MixerZone(MediaPlayerEntity):
     def select_source(self, source: str) -> None:
         """Select the source."""
         # Find source by name
-        source_obj = next((s for s in self._mixer.sources if s.name == source), None)
+        source_obj = self._mixer.sources_by_name.get(source)
         if source_obj:
             self._mixer.set_zone_source(zone_id=self.zone_id, source_id=source_obj.id)
         else:
