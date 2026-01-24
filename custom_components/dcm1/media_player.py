@@ -452,6 +452,14 @@ class MixerGroup(MediaPlayerEntity):
         self._attr_is_volume_muted = False
         self._attr_volume_level = None
         
+        # Try to get initial source state
+        initial_source_id = mixer.protocol.get_group_source(group_id)
+        if initial_source_id and initial_source_id in mixer.sources_by_id:
+            self._attr_source = mixer.sources_by_id[initial_source_id].name
+            _LOGGER.info(f"Group {group_id} initial source: {initial_source_id} ({self._attr_source})")
+        else:
+            _LOGGER.warning(f"Group {group_id} initial source is None or invalid: {initial_source_id}")
+        
         # Try to get initial volume level
         initial_volume = mixer.protocol.get_group_volume_level(group_id)
         _LOGGER.info(f"Group {group_id} initial volume from protocol: {initial_volume}")
