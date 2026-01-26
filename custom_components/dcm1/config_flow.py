@@ -107,7 +107,7 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
             updated_data = {**config_entry.data, **user_input}
             self.hass.config_entries.async_update_entry(config_entry, data=updated_data)
             await self.hass.config_entries.async_reload(config_entry.entry_id)
-            return self.async_abort_entry_setup_complete()
+            return self.async_abort(reason="reconfigure_successful")
 
         return self.async_show_form(
             step_id="reconfigure",
