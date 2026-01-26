@@ -390,8 +390,23 @@ class MixerZone(MediaPlayerEntity):
             # Level 0 = 0dB (max), Level 61 = -61dB (min)
             # Use logarithmic curve for natural loudness perception: volume = (1 - level/61)^(1/3)
             normalized = 1.0 - (int(level) / 61.0)
-            self._volume_level = normalized ** (1.0/3.0)
-            self._attr_volume_level = self._volume_level
+            new_volume = normalized ** (1.0/3.0)
+            
+            # Hysteresis: only update slider if current position would produce a different level
+            # This prevents small jumps when multiple HA volumes round to the same device level
+            if self._volume_level is not None:
+                current_would_be = round(61 * (1.0 - (self._volume_level ** 3.0)))
+                if current_would_be == int(level):
+                    # Current slider position is valid for this level, don't move it
+                    pass
+                else:
+                    # Current position would produce different level, update to actual
+                    self._volume_level = new_volume
+                    self._attr_volume_level = self._volume_level
+            else:
+                # No current volume, set to actual
+                self._volume_level = new_volume
+                self._attr_volume_level = self._volume_level
         self.schedule_update_ha_state()
 
     def select_source(self, source: str) -> None:
@@ -601,8 +616,23 @@ class MixerGroup(MediaPlayerEntity):
             # Level 0 = 0dB (max), Level 61 = -61dB (min)
             # Use logarithmic curve for natural loudness perception: volume = (1 - level/61)^(1/3)
             normalized = 1.0 - (int(level) / 61.0)
-            self._volume_level = normalized ** (1.0/3.0)
-            self._attr_volume_level = self._volume_level
+            new_volume = normalized ** (1.0/3.0)
+            
+            # Hysteresis: only update slider if current position would produce a different level
+            # This prevents small jumps when multiple HA volumes round to the same device level
+            if self._volume_level is not None:
+                current_would_be = round(61 * (1.0 - (self._volume_level ** 3.0)))
+                if current_would_be == int(level):
+                    # Current slider position is valid for this level, don't move it
+                    pass
+                else:
+                    # Current position would produce different level, update to actual
+                    self._volume_level = new_volume
+                    self._attr_volume_level = self._volume_level
+            else:
+                # No current volume, set to actual
+                self._volume_level = new_volume
+                self._attr_volume_level = self._volume_level
         self.schedule_update_ha_state()
 
     def select_source(self, source: str) -> None:
