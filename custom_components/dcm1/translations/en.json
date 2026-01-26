@@ -12,7 +12,10 @@
                 "data": {
                     "host": "Host",
                     "name": "Name",
-                    "port": "Port"
+                    "port": "Port",
+                    "use_zone_labels": "Use zone labels from device",
+                    "optimistic_volume": "Show volume changes immediately (optimistic)",
+                    "entity_name_suffix": "Entity name suffix"
                 }
             }
         }

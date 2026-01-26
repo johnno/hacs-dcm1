@@ -19,7 +19,12 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CONF_ENTITY_NAME_SUFFIX, CONF_USE_ZONE_LABELS, DOMAIN
+from .const import (
+    CONF_ENTITY_NAME_SUFFIX,
+    CONF_OPTIMISTIC_VOLUME,
+    CONF_USE_ZONE_LABELS,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +43,7 @@ async def async_setup_entry(
 
     use_zone_labels = config_entry.data.get(CONF_USE_ZONE_LABELS, True)
     entity_name_suffix = config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, "")
+    use_optimistic_volume = config_entry.data.get(CONF_OPTIMISTIC_VOLUME, True)
     
     # Query zone and source labels BEFORE creating entities
     _LOGGER.info("Querying zone labels, source labels, and volume levels")
@@ -99,7 +105,7 @@ async def async_setup_entry(
         enabled_inputs = mixer.get_enabled_line_inputs(zone_id)
         _LOGGER.info("DEBUG: Zone %s enabled_inputs returned: %s", zone_id, enabled_inputs)
         _LOGGER.info("DEBUG: Zone %s type: %s, bool: %s, len: %s", zone_id, type(enabled_inputs), bool(enabled_inputs), len(enabled_inputs) if enabled_inputs else 0)
-        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs)
+        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume)
         my_listener.add_mixer_zone_entity(zone.id, mixer_zone)
         entities.append(mixer_zone)
 
@@ -114,7 +120,7 @@ async def async_setup_entry(
             enabled_inputs = mixer.protocol.get_enabled_group_line_inputs(group_id)
             _LOGGER.info("DEBUG: Group %s enabled_inputs returned: %s", group_id, enabled_inputs)
             _LOGGER.info("DEBUG: Type of enabled_inputs: %s, bool check: %s", type(enabled_inputs), bool(enabled_inputs))
-            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs)
+            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume)
             my_listener.add_mixer_group_entity(group.id, mixer_group)
             entities.append(mixer_group)
         else:
@@ -260,13 +266,14 @@ class MixerZone(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None) -> None:
+    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True) -> None:
         """Init."""
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
         self._use_zone_labels = use_zone_labels
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
+        self._use_optimistic_volume = use_optimistic_volume
         
         _LOGGER.debug(f"Zone {zone_id} enabled_line_inputs: {self._enabled_line_inputs}")
         
@@ -471,11 +478,12 @@ class MixerZone(MediaPlayerEntity):
             level = round(61 * normalized)
             level = max(0, min(61, level))  # Clamp to audible range
         
-        # Store user's request as pending (uncommitted) - UI shows this optimistically
-        # Confirmed volume stays unchanged until device confirms
+        # Store user's request as pending (uncommitted)
+        # If optimistic UI enabled, show immediately; otherwise wait for confirmation
         self._pending_volume = volume
-        self._attr_volume_level = volume  # UI shows pending state
-        self.schedule_update_ha_state()  # Update UI immediately
+        if self._use_optimistic_volume:
+            self._attr_volume_level = volume  # UI shows pending state
+            self.schedule_update_ha_state()  # Update UI immediately
         
         self._mixer.set_volume(zone_id=self.zone_id, level=level)
 
@@ -520,13 +528,14 @@ class MixerGroup(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None) -> None:
+    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True) -> None:
         """Init."""
         self.group_id = group_id
         self._mixer: DCM1Mixer = mixer
         self._use_zone_labels = use_zone_labels
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
+        self._use_optimistic_volume = use_optimistic_volume
         
         _LOGGER.debug(f"Group {group_id} enabled_line_inputs: {self._enabled_line_inputs}")
         
@@ -749,11 +758,12 @@ class MixerGroup(MediaPlayerEntity):
             level = round(61 * normalized)
             level = max(0, min(61, level))  # Clamp to audible range
         
-        # Store user's request as pending (uncommitted) - UI shows this optimistically
-        # Confirmed volume stays unchanged until device confirms
+        # Store user's request as pending (uncommitted)
+        # If optimistic UI enabled, show immediately; otherwise wait for confirmation
         self._pending_volume = volume
-        self._attr_volume_level = volume  # UI shows pending state
-        self.schedule_update_ha_state()  # Update UI immediately
+        if self._use_optimistic_volume:
+            self._attr_volume_level = volume  # UI shows pending state
+            self.schedule_update_ha_state()  # Update UI immediately
         
         self._mixer.set_group_volume(group_id=self.group_id, level=level)
 
