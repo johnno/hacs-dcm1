@@ -282,7 +282,7 @@ class MixerZone(MediaPlayerEntity):
         self._volume_level = None  # Confirmed volume from device
         self._pending_volume = None  # User's uncommitted volume request
         self._is_volume_muted = False
-        self._raw_level = None  # Last raw device level (0-62)
+        self._raw_volume_level = None  # Last raw device volume level (0-62)
         
         # Try to get initial source state
         initial_source_id = mixer.status_of_zone(zone_id)
@@ -293,7 +293,7 @@ class MixerZone(MediaPlayerEntity):
         initial_volume = mixer.protocol.get_volume_level(zone_id)
         if initial_volume is not None:
             level_int = 62 if initial_volume == "mute" else int(initial_volume)
-            self._raw_level = level_int
+            self._raw_volume_level = level_int
             if level_int >= 62:
                 self._is_volume_muted = True
                 self._attr_is_volume_muted = True
@@ -401,7 +401,7 @@ class MixerZone(MediaPlayerEntity):
         if level == "mute":
             self._is_volume_muted = True
             self._attr_is_volume_muted = True
-            self._raw_level = 62
+            self._raw_volume_level = 62
         else:
             self._is_volume_muted = False
             self._attr_is_volume_muted = False
@@ -410,7 +410,7 @@ class MixerZone(MediaPlayerEntity):
             # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
             # Handle boundary: level 61 is minimum audible but multiple volumes round to it
             level_int = int(level)
-            self._raw_level = level_int
+            self._raw_volume_level = level_int
             if level_int >= 62:
                 new_volume = 0.0  # Mute maps to 0%
             elif level_int >= 61:
@@ -500,8 +500,8 @@ class MixerZone(MediaPlayerEntity):
     def extra_state_attributes(self):
         """Return integration-specific debugging attributes."""
         attrs = {}
-        if self._raw_level is not None:
-            attrs["dcm1_raw_level"] = self._raw_level
+        if self._raw_volume_level is not None:
+            attrs["dcm1_raw_volume_level"] = self._raw_volume_level
         if self._pending_volume is not None:
             attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
         if self._volume_level is not None:
@@ -512,8 +512,8 @@ class MixerZone(MediaPlayerEntity):
     def extra_state_attributes(self):
         """Return integration-specific debugging attributes."""
         attrs = {}
-        if self._raw_level is not None:
-            attrs["dcm1_raw_level"] = self._raw_level
+        if self._raw_volume_level is not None:
+            attrs["dcm1_raw_volume_level"] = self._raw_volume_level
         if self._pending_volume is not None:
             attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
         if self._volume_level is not None:
@@ -525,6 +525,18 @@ class MixerZone(MediaPlayerEntity):
         if self._volume_level is not None:
             new_volume = max(0.0, self._volume_level - 0.05)  # 5% decrement
             self.set_volume_level(new_volume)
+
+    @property
+    def extra_state_attributes(self):
+        """Return integration-specific debugging attributes."""
+        attrs = {}
+        if self._raw_volume_level is not None:
+            attrs["dcm1_raw_volume_level"] = self._raw_volume_level
+        if self._pending_volume is not None:
+            attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
+        if self._volume_level is not None:
+            attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
+        return attrs
 
     def mute_volume(self, mute: bool) -> None:
         """Mute or unmute the volume."""
@@ -573,7 +585,7 @@ class MixerGroup(MediaPlayerEntity):
         self._is_volume_muted = False
         self._attr_is_volume_muted = False
         self._attr_volume_level = None
-        self._raw_level = None  # Last raw device level (0-62)
+        self._raw_volume_level = None  # Last raw device volume level (0-62)
         
         # Try to get initial source state
         initial_source_id = mixer.protocol.get_group_source(group_id)
@@ -588,7 +600,7 @@ class MixerGroup(MediaPlayerEntity):
         _LOGGER.info(f"Group {group_id} initial volume from protocol: {initial_volume}")
         if initial_volume is not None:
             level_int = 62 if initial_volume == "mute" else int(initial_volume)
-            self._raw_level = level_int
+            self._raw_volume_level = level_int
             if level_int >= 62:
                 self._is_volume_muted = True
                 self._attr_is_volume_muted = True
@@ -705,7 +717,7 @@ class MixerGroup(MediaPlayerEntity):
         if level == "mute":
             self._is_volume_muted = True
             self._attr_is_volume_muted = True
-            self._raw_level = 62
+            self._raw_volume_level = 62
         else:
             self._is_volume_muted = False
             self._attr_is_volume_muted = False
@@ -714,7 +726,7 @@ class MixerGroup(MediaPlayerEntity):
             # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
             # Handle boundary: level 61 is minimum audible but multiple volumes round to it
             level_int = int(level)
-            self._raw_level = level_int
+            self._raw_volume_level = level_int
             if level_int >= 62:
                 new_volume = 0.0  # Mute maps to 0%
             elif level_int >= 61:
