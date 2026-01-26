@@ -289,10 +289,11 @@ class MixerZone(MediaPlayerEntity):
             else:
                 self._is_volume_muted = False
                 self._attr_is_volume_muted = False
-                # Convert DCM1 level (0-61) to HA volume (0.0-1.0)
-                # Use logarithmic curve for natural loudness perception: volume = (1 - level/61)^(1/3)
-                normalized = 1.0 - (int(initial_volume) / 61.0)
-                self._volume_level = normalized ** (1.0/3.0)
+                # Convert DCM1 level (0-62) to HA volume (0.0-1.0)
+                # Level 0 = 0dB (max), Level 61 = -61dB (min), Level 62 = mute
+                # Use square curve for natural loudness perception: volume = sqrt(1 - level/62)
+                normalized = 1.0 - (int(initial_volume) / 62.0)
+                self._volume_level = normalized ** 0.5
                 self._attr_volume_level = self._volume_level
 
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
@@ -386,16 +387,16 @@ class MixerZone(MediaPlayerEntity):
         else:
             self._is_volume_muted = False
             self._attr_is_volume_muted = False
-            # Convert DCM1 level (0-61) to HA volume (0.0-1.0)
-            # Level 0 = 0dB (max), Level 61 = -61dB (min)
-            # Use logarithmic curve for natural loudness perception: volume = (1 - level/61)^(1/3)
-            normalized = 1.0 - (int(level) / 61.0)
-            new_volume = normalized ** (1.0/3.0)
+            # Convert DCM1 level (0-62) to HA volume (0.0-1.0)
+            # Level 0 = 0dB (max), Level 61 = -61dB (min), Level 62 = mute
+            # Use square curve for natural loudness perception: volume = sqrt(1 - level/62)
+            normalized = 1.0 - (int(level) / 62.0)
+            new_volume = normalized ** 0.5
             
             # Hysteresis: only update slider if current position would produce a different level
             # This prevents small jumps when multiple HA volumes round to the same device level
             if self._volume_level is not None:
-                current_would_be = round(61 * (1.0 - (self._volume_level ** 3.0)))
+                current_would_be = round(62 * (1.0 - (self._volume_level ** 2.0)))
                 if current_would_be == int(level):
                     # Current slider position is valid for this level, don't move it
                     pass
@@ -422,12 +423,12 @@ class MixerZone(MediaPlayerEntity):
 
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
-        # Convert HA volume (0.0-1.0) to DCM1 level (0-61)
-        # Use logarithmic curve for natural loudness perception: level = 61 * (1 - volume^3)
-        # HA 0.0 = quietest = DCM1 61, HA 1.0 = loudest = DCM1 0
-        normalized = 1.0 - (volume ** 3.0)
-        level = int(61 * normalized)
-        level = max(0, min(61, level))  # Clamp to valid range
+        # Convert HA volume (0.0-1.0) to DCM1 level (0-62)
+        # Use square curve for natural loudness perception: level = 62 * (1 - volume^2)
+        # HA 0.0 = mute = DCM1 62, HA 1.0 = loudest = DCM1 0
+        normalized = 1.0 - (volume ** 2.0)
+        level = round(62 * normalized)
+        level = max(0, min(62, level))  # Clamp to valid range
         self._mixer.set_volume(zone_id=self.zone_id, level=level)
 
     def volume_up(self) -> None:
@@ -449,9 +450,9 @@ class MixerZone(MediaPlayerEntity):
         else:
             # Unmute to last known level, or default to -20dB (level 20)
             if self._volume_level is not None:
-                # Use logarithmic curve: level = 61 * (1 - volume^3)
-                normalized = 1.0 - (self._volume_level ** 3.0)
-                level = round(61 * normalized)
+                # Use square curve: level = 62 * (1 - volume^2)
+                normalized = 1.0 - (self._volume_level ** 2.0)
+                level = round(62 * normalized)
             else:
                 level = 20  # Default to -20dB
             self._mixer.set_volume(zone_id=self.zone_id, level=level)
@@ -506,10 +507,10 @@ class MixerGroup(MediaPlayerEntity):
             else:
                 self._is_volume_muted = False
                 self._attr_is_volume_muted = False
-                # Convert DCM1 level (0-61) to HA volume (0.0-1.0)
-                # Use logarithmic curve for natural loudness perception: volume = (1 - level/61)^(1/3)
-                normalized = 1.0 - (int(initial_volume) / 61.0)
-                self._volume_level = normalized ** (1.0/3.0)
+                # Convert DCM1 level (0-62) to HA volume (0.0-1.0)
+                # Use square curve for natural loudness perception: volume = sqrt(1 - level/62)
+                normalized = 1.0 - (int(initial_volume) / 62.0)
+                self._volume_level = normalized ** 0.5
                 self._attr_volume_level = self._volume_level
                 _LOGGER.info(f"Group {group_id} volume set to {self._attr_volume_level} (level {initial_volume})")
         else:
@@ -612,16 +613,16 @@ class MixerGroup(MediaPlayerEntity):
         else:
             self._is_volume_muted = False
             self._attr_is_volume_muted = False
-            # Convert DCM1 level (0-61) to HA volume (0.0-1.0)
-            # Level 0 = 0dB (max), Level 61 = -61dB (min)
-            # Use logarithmic curve for natural loudness perception: volume = (1 - level/61)^(1/3)
-            normalized = 1.0 - (int(level) / 61.0)
-            new_volume = normalized ** (1.0/3.0)
+            # Convert DCM1 level (0-62) to HA volume (0.0-1.0)
+            # Level 0 = 0dB (max), Level 61 = -61dB (min), Level 62 = mute
+            # Use square curve for natural loudness perception: volume = sqrt(1 - level/62)
+            normalized = 1.0 - (int(level) / 62.0)
+            new_volume = normalized ** 0.5
             
             # Hysteresis: only update slider if current position would produce a different level
             # This prevents small jumps when multiple HA volumes round to the same device level
             if self._volume_level is not None:
-                current_would_be = round(61 * (1.0 - (self._volume_level ** 3.0)))
+                current_would_be = round(62 * (1.0 - (self._volume_level ** 2.0)))
                 if current_would_be == int(level):
                     # Current slider position is valid for this level, don't move it
                     pass
@@ -648,12 +649,12 @@ class MixerGroup(MediaPlayerEntity):
 
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
-        # Convert HA volume (0.0-1.0) to DCM1 level (0-61)
-        # Use logarithmic curve for natural loudness perception: level = 61 * (1 - volume^3)
-        # HA 0.0 = quietest = DCM1 61, HA 1.0 = loudest = DCM1 0
-        normalized = 1.0 - (volume ** 3.0)
-        level = round(61 * normalized)
-        level = max(0, min(61, level))  # Clamp to valid range
+        # Convert HA volume (0.0-1.0) to DCM1 level (0-62)
+        # Use square curve for natural loudness perception: level = 62 * (1 - volume^2)
+        # HA 0.0 = mute = DCM1 62, HA 1.0 = loudest = DCM1 0
+        normalized = 1.0 - (volume ** 2.0)
+        level = round(62 * normalized)
+        level = max(0, min(62, level))  # Clamp to valid range
         self._mixer.set_group_volume(group_id=self.group_id, level=level)
 
     def volume_up(self) -> None:
@@ -675,9 +676,9 @@ class MixerGroup(MediaPlayerEntity):
         else:
             # Unmute to last known level, or default to -20dB (level 20)
             if self._volume_level is not None:
-                # Use logarithmic curve: level = 61 * (1 - volume^3)
-                normalized = 1.0 - (self._volume_level ** 3.0)
-                level = round(61 * normalized)
+                # Use square curve: level = 62 * (1 - volume^2)
+                normalized = 1.0 - (self._volume_level ** 2.0)
+                level = round(62 * normalized)
             else:
                 level = 20  # Default to -20dB
             self._mixer.set_group_volume(group_id=self.group_id, level=level)
