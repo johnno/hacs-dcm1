@@ -44,6 +44,7 @@ async def async_setup_entry(
     use_zone_labels = config_entry.data.get(CONF_USE_ZONE_LABELS, True)
     entity_name_suffix = config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, "")
     use_optimistic_volume = config_entry.data.get(CONF_OPTIMISTIC_VOLUME, True)
+    volume_db_range = config_entry.data.get("volume_db_range", 40)  # dB range for slider (40 = practical, 61 = full)
     
     # Query zone and source labels BEFORE creating entities
     _LOGGER.info("Querying zone labels, source labels, and volume levels")
@@ -105,7 +106,7 @@ async def async_setup_entry(
         enabled_inputs = mixer.get_enabled_line_inputs(zone_id)
         _LOGGER.info("DEBUG: Zone %s enabled_inputs returned: %s", zone_id, enabled_inputs)
         _LOGGER.info("DEBUG: Zone %s type: %s, bool: %s, len: %s", zone_id, type(enabled_inputs), bool(enabled_inputs), len(enabled_inputs) if enabled_inputs else 0)
-        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume)
+        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range)
         my_listener.add_mixer_zone_entity(zone.id, mixer_zone)
         entities.append(mixer_zone)
 
@@ -120,7 +121,7 @@ async def async_setup_entry(
             enabled_inputs = mixer.protocol.get_enabled_group_line_inputs(group_id)
             _LOGGER.info("DEBUG: Group %s enabled_inputs returned: %s", group_id, enabled_inputs)
             _LOGGER.info("DEBUG: Type of enabled_inputs: %s, bool check: %s", type(enabled_inputs), bool(enabled_inputs))
-            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume)
+            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range)
             my_listener.add_mixer_group_entity(group.id, mixer_group)
             entities.append(mixer_group)
         else:
@@ -266,7 +267,7 @@ class MixerZone(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True) -> None:
+    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40) -> None:
         """Init."""
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
@@ -274,6 +275,7 @@ class MixerZone(MediaPlayerEntity):
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
         self._use_optimistic_volume = use_optimistic_volume
+        self._volume_db_range = max(1, min(61, volume_db_range))  # Clamp to valid range
         
         _LOGGER.debug(f"Zone {zone_id} enabled_line_inputs: {self._enabled_line_inputs}")
         
@@ -302,15 +304,14 @@ class MixerZone(MediaPlayerEntity):
                 self._is_volume_muted = False
                 self._attr_is_volume_muted = False
                 # Convert DCM1 level to HA volume (0.0-1.0)
-                # Special case: Level 62 (mute) → 0%, all other levels use square curve
-                # Level 0 = 0dB (max) → 100%, Level 61 = -61dB (quietest audible) → ~1%
-                # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
-                # Handle boundary: level 61 is minimum audible but multiple volumes round to it
-                if level_int >= 61:
-                    self._volume_level = 0.01  # Level 61 minimum audible
+                # Linear mapping in dB space (dB is already logarithmic, matches human perception)
+                # Configurable range: 0% → -volume_db_range dB, 100% → 0 dB
+                # Example: range=40 means 0%=-40dB, 50%=-20dB, 100%=0dB
+                if level_int >= self._volume_db_range:
+                    self._volume_level = 0.0  # Below usable range
                 else:
-                    normalized = 1.0 - (level_int / 61.0)
-                    self._volume_level = normalized ** 0.5
+                    # Linear: volume = 1 - (level / range)
+                    self._volume_level = 1.0 - (level_int / self._volume_db_range)
             self._attr_volume_level = self._volume_level
 
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
@@ -406,26 +407,21 @@ class MixerZone(MediaPlayerEntity):
             self._is_volume_muted = False
             self._attr_is_volume_muted = False
             # Convert DCM1 level to HA volume (0.0-1.0)
-            # Special case: Level 62 (mute) → 0%, all other levels use square curve
-            # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
-            # Handle boundary: level 61 is minimum audible but multiple volumes round to it
+            # Linear mapping in dB space: volume = 1 - (level / range)
             level_int = int(level)
             self._raw_volume_level = level_int
-            if level_int >= 62:
-                new_volume = 0.0  # Mute maps to 0%
-            elif level_int >= 61:
-                new_volume = 0.01  # Level 61 is minimum audible, don't collapse to 0%
+            if level_int >= self._volume_db_range:
+                new_volume = 0.0  # Below usable range maps to 0%
             else:
-                normalized = 1.0 - (level_int / 61.0)
-                new_volume = normalized ** 0.5
+                new_volume = 1.0 - (level_int / self._volume_db_range)
             
             # Check if this confirms a pending user request or is an external change
             # If we have a pending volume, check if device level matches what user requested
             if self._pending_volume is not None:
                 if self._pending_volume == 0.0:
-                    expected_level = 62
+                    expected_level = self._volume_db_range  # 0% maps to max attenuation
                 else:
-                    expected_level = round(61 * (1.0 - (self._pending_volume ** 2.0)))
+                    expected_level = round(self._volume_db_range * (1.0 - self._pending_volume))
                 
                 if expected_level == level_int:
                     # Device confirmed user's request - commit pending to confirmed
@@ -443,7 +439,7 @@ class MixerZone(MediaPlayerEntity):
                 # No pending request - check if current position already produces this level
                 # (hysteresis: multiple HA volumes can round to same device level)
                 if self._volume_level is not None:
-                    current_would_be = 62 if self._volume_level == 0.0 else round(61 * (1 - self._volume_level ** 2))
+                    current_would_be = self._volume_db_range if self._volume_level == 0.0 else round(self._volume_db_range * (1 - self._volume_level))
                     if current_would_be == level_int:
                         # Current slider position already produces this level - keep it
                         self._attr_volume_level = self._volume_level
@@ -471,15 +467,14 @@ class MixerZone(MediaPlayerEntity):
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
         # Convert HA volume (0.0-1.0) to DCM1 level
-        # Special case: 0% → level 62 (mute), >0-100% → levels 61-0 (audible, square curve)
-        # Use square curve for natural loudness perception: level = 61 * (1 - volume^2)
-        # HA 0.0 = mute (DCM1 62), HA 1.0 = loudest (DCM1 0)
+        # Linear mapping in dB space: level = range * (1 - volume)
+        # Example with range=40: 0%→40 (-40dB), 50%→20 (-20dB), 100%→0 (0dB)
+        # HA 0.0 = max attenuation, HA 1.0 = no attenuation (0 dB)
         if volume == 0.0:
-            level = 62  # Exact 0% maps to mute
+            level = self._volume_db_range  # 0% maps to minimum volume
         else:
-            normalized = 1.0 - (volume ** 2.0)
-            level = round(61 * normalized)
-            level = max(0, min(61, level))  # Clamp to audible range
+            level = round(self._volume_db_range * (1.0 - volume))
+            level = max(0, min(self._volume_db_range, level))  # Clamp to valid range
         
         # Store user's request as pending (uncommitted)
         # If optimistic UI enabled, show immediately; otherwise wait for confirmation
@@ -495,30 +490,6 @@ class MixerZone(MediaPlayerEntity):
         if self._volume_level is not None:
             new_volume = min(1.0, self._volume_level + 0.05)  # 5% increment
             self.set_volume_level(new_volume)
-
-    @property
-    def extra_state_attributes(self):
-        """Return integration-specific debugging attributes."""
-        attrs = {}
-        if self._raw_volume_level is not None:
-            attrs["dcm1_raw_volume_level"] = self._raw_volume_level
-        if self._pending_volume is not None:
-            attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
-        if self._volume_level is not None:
-            attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
-        return attrs
-
-    @property
-    def extra_state_attributes(self):
-        """Return integration-specific debugging attributes."""
-        attrs = {}
-        if self._raw_volume_level is not None:
-            attrs["dcm1_raw_volume_level"] = self._raw_volume_level
-        if self._pending_volume is not None:
-            attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
-        if self._volume_level is not None:
-            attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
-        return attrs
 
     def volume_down(self) -> None:
         """Decrease volume by one step."""
@@ -543,14 +514,12 @@ class MixerZone(MediaPlayerEntity):
         if mute:
             self._mixer.set_volume(zone_id=self.zone_id, level=62)  # 62 = mute
         else:
-            # Unmute to last known level, or default to -20dB (level 20)
+            # Unmute to last known level, or default to mid-range
             if self._volume_level is not None and self._volume_level > 0.0:
-                # Use square curve: level = 61 * (1 - volume^2)
-                # Only unmute if slider is above 0% (otherwise would re-mute)
-                normalized = 1.0 - (self._volume_level ** 2.0)
-                level = round(61 * normalized)
+                # Linear: level = range * (1 - volume)
+                level = round(self._volume_db_range * (1.0 - self._volume_level))
             else:
-                level = 20  # Default to -20dB if slider at 0% or unknown
+                level = self._volume_db_range // 2  # Default to mid-range if slider at 0% or unknown
             self._mixer.set_volume(zone_id=self.zone_id, level=level)
 class MixerGroup(MediaPlayerEntity):
     """Represents an enabled Group of the DCM1 Mixer."""
@@ -567,7 +536,7 @@ class MixerGroup(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True) -> None:
+    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40) -> None:
         """Init."""
         self.group_id = group_id
         self._mixer: DCM1Mixer = mixer
@@ -575,6 +544,7 @@ class MixerGroup(MediaPlayerEntity):
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
         self._use_optimistic_volume = use_optimistic_volume
+        self._volume_db_range = max(1, min(61, volume_db_range))  # Clamp to valid range
         
         _LOGGER.debug(f"Group {group_id} enabled_line_inputs: {self._enabled_line_inputs}")
         
@@ -610,14 +580,12 @@ class MixerGroup(MediaPlayerEntity):
                 self._is_volume_muted = False
                 self._attr_is_volume_muted = False
                 # Convert DCM1 level to HA volume (0.0-1.0)
-                # Special case: Level 62 (mute) → 0%, all other levels use square curve
-                # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
-                # Handle boundary: level 61 is minimum audible but multiple volumes round to it
-                if level_int >= 61:
-                    self._volume_level = 0.01  # Level 61 is minimum audible
+                # Linear mapping in dB space (dB is already logarithmic, matches human perception)
+                # Configurable range: 0% → -volume_db_range dB, 100% → 0 dB
+                if level_int >= self._volume_db_range:
+                    self._volume_level = 0.0  # Below usable range
                 else:
-                    normalized = 1.0 - (level_int / 61.0)
-                    self._volume_level = normalized ** 0.5
+                    self._volume_level = 1.0 - (level_int / self._volume_db_range)
                 self._attr_volume_level = self._volume_level
                 _LOGGER.info(f"Group {group_id} volume set to {self._attr_volume_level} (level {initial_volume})")
         else:
@@ -722,18 +690,13 @@ class MixerGroup(MediaPlayerEntity):
             self._is_volume_muted = False
             self._attr_is_volume_muted = False
             # Convert DCM1 level to HA volume (0.0-1.0)
-            # Special case: Level 62 (mute) → 0%, all other levels use square curve
-            # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
-            # Handle boundary: level 61 is minimum audible but multiple volumes round to it
+            # Linear mapping in dB space: volume = 1 - (level / range)
             level_int = int(level)
             self._raw_volume_level = level_int
-            if level_int >= 62:
-                new_volume = 0.0  # Mute maps to 0%
-            elif level_int >= 61:
-                new_volume = 0.01  # Level 61 is minimum audible, don't collapse to 0%
+            if level_int >= self._volume_db_range:
+                new_volume = 0.0  # Below usable range maps to 0%
             else:
-                normalized = 1.0 - (level_int / 61.0)
-                new_volume = normalized ** 0.5
+                new_volume = 1.0 - (level_int / self._volume_db_range)
             
             # Pending/committed pattern: check if this confirmation matches user's pending request
             # If it matches → commit the pending value (user got what they wanted)
@@ -742,9 +705,9 @@ class MixerGroup(MediaPlayerEntity):
             if self._pending_volume is not None:
                 # We have a pending user request - check if device confirmed it
                 if self._pending_volume == 0.0:
-                    expected_level = 62  # 0% maps to mute
+                    expected_level = self._volume_db_range  # 0% maps to max attenuation
                 else:
-                    expected_level = round(61 * (1 - self._pending_volume ** 2))
+                    expected_level = round(self._volume_db_range * (1.0 - self._pending_volume))
                 
                 if expected_level == level_int:
                     # Device confirmed our pending request - commit it
@@ -762,7 +725,7 @@ class MixerGroup(MediaPlayerEntity):
                 # No pending request - check if current position already produces this level
                 # (hysteresis: multiple HA volumes can round to same device level)
                 if self._volume_level is not None:
-                    current_would_be = 62 if self._volume_level == 0.0 else round(61 * (1 - self._volume_level ** 2))
+                    current_would_be = self._volume_db_range if self._volume_level == 0.0 else round(self._volume_db_range * (1 - self._volume_level))
                     if current_would_be == level_int:
                         # Current slider position already produces this level - keep it
                         self._attr_volume_level = self._volume_level
@@ -790,15 +753,14 @@ class MixerGroup(MediaPlayerEntity):
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
         # Convert HA volume (0.0-1.0) to DCM1 level
-        # Special case: 0% → level 62 (mute), >0-100% → levels 61-0 (audible, square curve)
-        # Use square curve for natural loudness perception: level = 61 * (1 - volume^2)
-        # HA 0.0 = mute (DCM1 62), HA 1.0 = loudest (DCM1 0)
+        # Linear mapping in dB space: level = range * (1 - volume)
+        # Example with range=40: 0%→40 (-40dB), 50%→20 (-20dB), 100%→0 (0dB)
+        # HA 0.0 = max attenuation, HA 1.0 = no attenuation (0 dB)
         if volume == 0.0:
-            level = 62  # Exact 0% maps to mute
+            level = self._volume_db_range  # 0% maps to minimum volume
         else:
-            normalized = 1.0 - (volume ** 2.0)
-            level = round(61 * normalized)
-            level = max(0, min(61, level))  # Clamp to audible range
+            level = round(self._volume_db_range * (1.0 - volume))
+            level = max(0, min(self._volume_db_range, level))  # Clamp to valid range
         
         # Store user's request as pending (uncommitted)
         # If optimistic UI enabled, show immediately; otherwise wait for confirmation
@@ -826,12 +788,10 @@ class MixerGroup(MediaPlayerEntity):
         if mute:
             self._mixer.set_group_volume(group_id=self.group_id, level=62)  # 62 = mute
         else:
-            # Unmute to last known level, or default to -20dB (level 20)
+            # Unmute to last known level, or default to mid-range
             if self._volume_level is not None and self._volume_level > 0.0:
-                # Use square curve: level = 61 * (1 - volume^2)
-                # Only unmute if slider is above 0% (otherwise would re-mute)
-                normalized = 1.0 - (self._volume_level ** 2.0)
-                level = round(61 * normalized)
+                # Linear: level = range * (1 - volume)
+                level = round(self._volume_db_range * (1.0 - self._volume_level))
             else:
-                level = 20  # Default to -20dB if slider at 0% or unknown
+                level = self._volume_db_range // 2  # Default to mid-range if slider at 0% or unknown
             self._mixer.set_group_volume(group_id=self.group_id, level=level)
