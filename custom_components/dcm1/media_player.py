@@ -293,9 +293,12 @@ class MixerZone(MediaPlayerEntity):
                 # Special case: Level 62 (mute) → 0%, all other levels use square curve
                 # Level 0 = 0dB (max) → 100%, Level 61 = -61dB (quietest audible) → ~1%
                 # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
+                # Handle boundary: level 61 is minimum audible but multiple volumes round to it
                 level_int = int(initial_volume)
                 if level_int >= 62:
                     self._volume_level = 0.0  # Mute maps to 0%
+                elif level_int >= 61:
+                    self._volume_level = 0.01  # Level 61 is minimum audible, don't collapse to 0%
                 else:
                     normalized = 1.0 - (level_int / 61.0)
                     self._volume_level = normalized ** 0.5
@@ -395,9 +398,12 @@ class MixerZone(MediaPlayerEntity):
             # Convert DCM1 level to HA volume (0.0-1.0)
             # Special case: Level 62 (mute) → 0%, all other levels use square curve
             # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
+            # Handle boundary: level 61 is minimum audible but multiple volumes round to it
             level_int = int(level)
             if level_int >= 62:
                 new_volume = 0.0  # Mute maps to 0%
+            elif level_int >= 61:
+                new_volume = 0.01  # Level 61 is minimum audible, don't collapse to 0%
             else:
                 normalized = 1.0 - (level_int / 61.0)
                 new_volume = normalized ** 0.5
@@ -528,9 +534,12 @@ class MixerGroup(MediaPlayerEntity):
                 # Convert DCM1 level to HA volume (0.0-1.0)
                 # Special case: Level 62 (mute) → 0%, all other levels use square curve
                 # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
+                # Handle boundary: level 61 is minimum audible but multiple volumes round to it
                 level_int = int(initial_volume)
                 if level_int >= 62:
                     self._volume_level = 0.0  # Mute maps to 0%
+                elif level_int >= 61:
+                    self._volume_level = 0.01  # Level 61 is minimum audible, don't collapse to 0%
                 else:
                     normalized = 1.0 - (level_int / 61.0)
                     self._volume_level = normalized ** 0.5
@@ -639,9 +648,12 @@ class MixerGroup(MediaPlayerEntity):
             # Convert DCM1 level to HA volume (0.0-1.0)
             # Special case: Level 62 (mute) → 0%, all other levels use square curve
             # Use square curve for natural loudness perception: volume = sqrt(1 - level/61)
+            # Handle boundary: level 61 is minimum audible but multiple volumes round to it
             level_int = int(level)
             if level_int >= 62:
                 new_volume = 0.0  # Mute maps to 0%
+            elif level_int >= 61:
+                new_volume = 0.01  # Level 61 is minimum audible, don't collapse to 0%
             else:
                 normalized = 1.0 - (level_int / 61.0)
                 new_volume = normalized ** 0.5
