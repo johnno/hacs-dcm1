@@ -436,7 +436,7 @@ class MixerZone(MediaPlayerEntity):
             if self._volume_level is not None:
                 # Use logarithmic curve: level = 61 * (1 - volume^3)
                 normalized = 1.0 - (self._volume_level ** 3.0)
-                level = int(61 * normalized)
+                level = round(61 * normalized)
             else:
                 level = 20  # Default to -20dB
             self._mixer.set_volume(zone_id=self.zone_id, level=level)
@@ -622,7 +622,7 @@ class MixerGroup(MediaPlayerEntity):
         # Use logarithmic curve for natural loudness perception: level = 61 * (1 - volume^3)
         # HA 0.0 = quietest = DCM1 61, HA 1.0 = loudest = DCM1 0
         normalized = 1.0 - (volume ** 3.0)
-        level = int(61 * normalized)
+        level = round(61 * normalized)
         level = max(0, min(61, level))  # Clamp to valid range
         self._mixer.set_group_volume(group_id=self.group_id, level=level)
 
@@ -647,7 +647,7 @@ class MixerGroup(MediaPlayerEntity):
             if self._volume_level is not None:
                 # Use logarithmic curve: level = 61 * (1 - volume^3)
                 normalized = 1.0 - (self._volume_level ** 3.0)
-                level = int(61 * normalized)
+                level = round(61 * normalized)
             else:
                 level = 20  # Default to -20dB
             self._mixer.set_group_volume(group_id=self.group_id, level=level)
