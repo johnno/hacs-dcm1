@@ -18,7 +18,9 @@ from .const import (
     CONF_ENTITY_NAME_SUFFIX,
     CONF_OPTIMISTIC_VOLUME,
     CONF_USE_ZONE_LABELS,
+    CONF_VOLUME_DB_RANGE,
     DEFAULT_PORT,
+    DEFAULT_VOLUME_DB_RANGE,
     DOMAIN,
 )
 
@@ -32,6 +34,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_USE_ZONE_LABELS, default=True): bool,
         vol.Optional(CONF_OPTIMISTIC_VOLUME, default=True): bool,
         vol.Optional(CONF_ENTITY_NAME_SUFFIX, default=""): str,
+        vol.Optional(CONF_VOLUME_DB_RANGE, default=DEFAULT_VOLUME_DB_RANGE): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=61)
+        ),
     }
 )
 
@@ -79,6 +84,45 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration of the integration."""
+        config_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
+        if config_entry is None:
+            return self.async_abort(reason="reconfigure_failed")
+
+        if user_input is not None:
+            # Update the config entry with new values, keeping existing host/port/name
+            config_entry.data = {**config_entry.data, **user_input}
+            self.hass.config_entries.async_update_entry(config_entry)
+            await self.hass.config_entries.async_reload(config_entry.entry_id)
+            return self.async_abort_entry_setup_complete()
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_OPTIMISTIC_VOLUME,
+                        default=config_entry.data.get(CONF_OPTIMISTIC_VOLUME, True),
+                    ): bool,
+                    vol.Optional(
+                        CONF_ENTITY_NAME_SUFFIX,
+                        default=config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, ""),
+                    ): str,
+                    vol.Optional(
+                        CONF_VOLUME_DB_RANGE,
+                        default=config_entry.data.get(
+                            CONF_VOLUME_DB_RANGE, DEFAULT_VOLUME_DB_RANGE
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=61)),
+                }
+            ),
         )
 
 

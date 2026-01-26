@@ -46,3 +46,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     mixer.close()
 
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_reconfigure_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle reconfiguration of the entry."""
+    await hass.config_entries.async_reload(entry.entry_id)
