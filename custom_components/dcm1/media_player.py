@@ -272,7 +272,8 @@ class MixerZone(MediaPlayerEntity):
         
         self._attr_source_list = self._build_source_list()
         self._attr_state = MediaPlayerState.ON
-        self._volume_level = None
+        self._volume_level = None  # Confirmed volume from device
+        self._pending_volume = None  # User's uncommitted volume request
         self._is_volume_muted = False
         
         # Try to get initial source state
@@ -408,23 +409,27 @@ class MixerZone(MediaPlayerEntity):
                 normalized = 1.0 - (level_int / 61.0)
                 new_volume = normalized ** 0.5
             
-            # Hysteresis: only update slider if current position would produce a different level
-            # This prevents small jumps when multiple HA volumes round to the same device level
-            if self._volume_level is not None:
-                if self._volume_level == 0.0:
-                    current_would_be = 62  # 0% maps to mute
+            # Check if this confirms a pending user request or is an external change
+            # If we have a pending volume, check if device level matches what user requested
+            if self._pending_volume is not None:
+                if self._pending_volume == 0.0:
+                    expected_level = 62
                 else:
-                    current_would_be = round(61 * (1.0 - (self._volume_level ** 2.0)))
-                if current_would_be == level_int:
-                    # Current slider position is valid for this level, don't move it
-                    # But ensure attributes stay consistent
+                    expected_level = round(61 * (1.0 - (self._pending_volume ** 2.0)))
+                
+                if expected_level == level_int:
+                    # Device confirmed user's request - commit pending to confirmed
+                    self._volume_level = self._pending_volume
+                    self._pending_volume = None
                     self._attr_volume_level = self._volume_level
                 else:
-                    # Current position would produce different level, update to actual
+                    # Device reports different level - external change (physical knob)
+                    # Override pending with actual device state
                     self._volume_level = new_volume
+                    self._pending_volume = None
                     self._attr_volume_level = new_volume
             else:
-                # No current volume, set to actual
+                # No pending request - this is either initial state or external change
                 self._volume_level = new_volume
                 self._attr_volume_level = new_volume
         self.schedule_update_ha_state()
@@ -453,9 +458,10 @@ class MixerZone(MediaPlayerEntity):
             level = round(61 * normalized)
             level = max(0, min(61, level))  # Clamp to audible range
         
-        # Optimistically update internal volume so hysteresis knows user's intent
-        self._volume_level = volume
-        self._attr_volume_level = volume
+        # Store user's request as pending (uncommitted) - UI shows this optimistically
+        # Confirmed volume stays unchanged until device confirms
+        self._pending_volume = volume
+        self._attr_volume_level = volume  # UI shows pending state
         self.schedule_update_ha_state()  # Update UI immediately
         
         self._mixer.set_volume(zone_id=self.zone_id, level=level)
@@ -513,7 +519,8 @@ class MixerGroup(MediaPlayerEntity):
         
         self._attr_source_list = self._build_source_list()
         self._attr_state = MediaPlayerState.ON
-        self._volume_level = None
+        self._volume_level = None  # Confirmed volume from device
+        self._pending_volume = None  # User's uncommitted volume request
         self._is_volume_muted = False
         self._attr_is_volume_muted = False
         self._attr_volume_level = None
@@ -664,23 +671,30 @@ class MixerGroup(MediaPlayerEntity):
                 normalized = 1.0 - (level_int / 61.0)
                 new_volume = normalized ** 0.5
             
-            # Hysteresis: only update slider if current position would produce a different level
-            # This prevents small jumps when multiple HA volumes round to the same device level
-            if self._volume_level is not None:
-                if self._volume_level == 0.0:
-                    current_would_be = 62  # 0% maps to mute
+            # Pending/committed pattern: check if this confirmation matches user's pending request
+            # If it matches → commit the pending value (user got what they wanted)
+            # If it doesn't match → external change (physical knob), override pending with actual
+            # If no pending → regular state update (heartbeat polling)
+            if self._pending_volume is not None:
+                # We have a pending user request - check if device confirmed it
+                if self._pending_volume == 0.0:
+                    expected_level = 62  # 0% maps to mute
                 else:
-                    current_would_be = round(61 * (1.0 - (self._volume_level ** 2.0)))
-                if current_would_be == level_int:
-                    # Current slider position is valid for this level, don't move it
-                    # But ensure attributes stay consistent
+                    expected_level = round(61 * (1 - self._pending_volume ** 2))
+                
+                if expected_level == level_int:
+                    # Device confirmed our pending request - commit it
+                    self._volume_level = self._pending_volume
+                    self._pending_volume = None
                     self._attr_volume_level = self._volume_level
                 else:
-                    # Current position would produce different level, update to actual
+                    # Device reports different level - external change (physical control)
+                    # Override pending with actual device state
                     self._volume_level = new_volume
+                    self._pending_volume = None
                     self._attr_volume_level = new_volume
             else:
-                # No current volume, set to actual
+                # No pending request - regular state update
                 self._volume_level = new_volume
                 self._attr_volume_level = new_volume
         self.schedule_update_ha_state()
@@ -709,9 +723,10 @@ class MixerGroup(MediaPlayerEntity):
             level = round(61 * normalized)
             level = max(0, min(61, level))  # Clamp to audible range
         
-        # Optimistically update internal volume so hysteresis knows user's intent
-        self._volume_level = volume
-        self._attr_volume_level = volume
+        # Store user's request as pending (uncommitted) - UI shows this optimistically
+        # Confirmed volume stays unchanged until device confirms
+        self._pending_volume = volume
+        self._attr_volume_level = volume  # UI shows pending state
         self.schedule_update_ha_state()  # Update UI immediately
         
         self._mixer.set_group_volume(group_id=self.group_id, level=level)
