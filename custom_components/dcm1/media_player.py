@@ -456,6 +456,7 @@ class MixerZone(MediaPlayerEntity):
         # Optimistically update internal volume so hysteresis knows user's intent
         self._volume_level = volume
         self._attr_volume_level = volume
+        self.schedule_update_ha_state()  # Update UI immediately
         
         self._mixer.set_volume(zone_id=self.zone_id, level=level)
 
@@ -711,6 +712,7 @@ class MixerGroup(MediaPlayerEntity):
         # Optimistically update internal volume so hysteresis knows user's intent
         self._volume_level = volume
         self._attr_volume_level = volume
+        self.schedule_update_ha_state()  # Update UI immediately
         
         self._mixer.set_group_volume(group_id=self.group_id, level=level)
 
