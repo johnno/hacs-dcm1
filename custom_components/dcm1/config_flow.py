@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import selector
 
 from .const import (
     CONF_ENTITY_NAME_SUFFIX,
@@ -34,8 +35,13 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_USE_ZONE_LABELS, default=True): bool,
         vol.Optional(CONF_OPTIMISTIC_VOLUME, default=True): bool,
         vol.Optional(CONF_ENTITY_NAME_SUFFIX, default=""): str,
-        vol.Optional(CONF_VOLUME_DB_RANGE, default=DEFAULT_VOLUME_DB_RANGE): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=61)
+        vol.Optional(CONF_VOLUME_DB_RANGE, default=DEFAULT_VOLUME_DB_RANGE): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=1,
+                max=61,
+                unit_of_measurement="dB",
+                mode="slider",
+            )
         ),
     }
 )
@@ -110,19 +116,29 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Optional(
                         CONF_OPTIMISTIC_VOLUME,
                         default=config_entry.data.get(CONF_OPTIMISTIC_VOLUME, True),
-                    ): bool,
+                    ): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_ENTITY_NAME_SUFFIX,
                         default=config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, ""),
-                    ): str,
+                    ): selector.TextSelector(),
                     vol.Optional(
                         CONF_VOLUME_DB_RANGE,
                         default=config_entry.data.get(
                             CONF_VOLUME_DB_RANGE, DEFAULT_VOLUME_DB_RANGE
                         ),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=61)),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=1,
+                            max=61,
+                            unit_of_measurement="dB",
+                            mode="slider",
+                        )
+                    ),
                 }
             ),
+            description_placeholders={
+                "volume_db_range_hint": "Attenuation range for volume slider. Higher values = more range (e.g., 40 dB means 0% = -40dB, 50% = -20dB, 100% = 0dB)"
+            },
         )
 
 
