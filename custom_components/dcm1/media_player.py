@@ -452,6 +452,11 @@ class MixerZone(MediaPlayerEntity):
             normalized = 1.0 - (volume ** 2.0)
             level = round(61 * normalized)
             level = max(0, min(61, level))  # Clamp to audible range
+        
+        # Optimistically update internal volume so hysteresis knows user's intent
+        self._volume_level = volume
+        self._attr_volume_level = volume
+        
         self._mixer.set_volume(zone_id=self.zone_id, level=level)
 
     def volume_up(self) -> None:
@@ -702,6 +707,11 @@ class MixerGroup(MediaPlayerEntity):
             normalized = 1.0 - (volume ** 2.0)
             level = round(61 * normalized)
             level = max(0, min(61, level))  # Clamp to audible range
+        
+        # Optimistically update internal volume so hysteresis knows user's intent
+        self._volume_level = volume
+        self._attr_volume_level = volume
+        
         self._mixer.set_group_volume(group_id=self.group_id, level=level)
 
     def volume_up(self) -> None:
