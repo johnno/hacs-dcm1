@@ -3,6 +3,7 @@
   "name": "Cloud DCM1 Zone Mixer",
   "codeowners": ["@johnno"],
   "config_flow": true,
+  "reconfigure": true,
   "dependencies": [],
   "documentation": "https://github.com/johnno/hacs-dcm1",
   "issue_tracker": "https://github.com/johnno/hacs-dcm1/issues",

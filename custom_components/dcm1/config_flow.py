@@ -98,8 +98,8 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             # Update the config entry with new values, keeping existing host/port/name
-            config_entry.data = {**config_entry.data, **user_input}
-            self.hass.config_entries.async_update_entry(config_entry)
+            updated_data = {**config_entry.data, **user_input}
+            self.hass.config_entries.async_update_entry(config_entry, data=updated_data)
             await self.hass.config_entries.async_reload(config_entry.entry_id)
             return self.async_abort_entry_setup_complete()
 
