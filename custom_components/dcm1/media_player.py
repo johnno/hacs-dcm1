@@ -419,8 +419,10 @@ class MixerZone(MediaPlayerEntity):
         if self._pending_volume is not None and self._pending_raw_volume_level is not None:
             if level_int != self._pending_raw_volume_level:
                 # Stale response from before our command - reject unless we've timed out
-                self._pending_volume_rejected_count += 1                # Retry strategy options: count 1 = wait/see (likely stale during confirmation),
-                # count 2 = could re-issue command (mitigation), count 3 = give up (accept device)                if self._pending_volume_rejected_count >= 3:
+                self._pending_volume_rejected_count += 1
+                # Retry strategy options: count 1 = wait/see (likely stale during confirmation),
+                # count 2 = could re-issue command (mitigation), count 3 = give up (accept device)
+                if self._pending_volume_rejected_count >= 3:
                     # After 3 rejections (~30s), our command may have been lost - accept device state
                     _LOGGER.warning(
                         f"Zone {self.zone_id}: Rejected 3 volume responses, "
