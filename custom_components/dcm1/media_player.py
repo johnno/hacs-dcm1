@@ -177,9 +177,6 @@ class MyListener(SourceChangeListener):
         # Update all group entities with new source list
         for entity in self.mixer_group_entities.values():
             entity.update_source_list()
-        # Update all group entities with new source list
-        for entity in self.mixer_group_entities.values():
-            entity.update_source_list()
 
     def line_inputs_changed(self, zone_id: int, enabled_inputs: dict[int, bool]):
         """Line inputs enabled status changed callback."""
@@ -193,7 +190,7 @@ class MyListener(SourceChangeListener):
         _LOGGER.debug("Volume level changed for Zone ID %s to: %s", zone_id, level)
         entity = self.mixer_zone_entities.get(zone_id)
         if entity:
-            entity.set_volume(level)
+            entity.maybe_update_volume_level_from_device(level)
 
     def group_label_changed(self, group_id: int, label: str):
         """Group label changed callback."""
@@ -219,7 +216,7 @@ class MyListener(SourceChangeListener):
         _LOGGER.debug("Group volume level changed for Group ID %s to: %s", group_id, level)
         entity = self.mixer_group_entities.get(group_id)
         if entity:
-            entity.set_volume(level)
+            entity.maybe_update_volume_level_from_device(level)
 
     def group_source_changed(self, group_id: int, source_id: int):
         """Group source changed callback."""
@@ -283,6 +280,7 @@ class MixerZone(MediaPlayerEntity):
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None  # Confirmed volume from device
         self._pending_volume = None  # User's uncommitted volume request
+        self._pending_raw_volume_level = None  # Raw device level for pending request (0-62)
         self._is_volume_muted = False
         self._raw_volume_level = None  # Last raw device volume level (0-62)
         self._pre_mute_volume = None  # HA volume level before muting (0.0-1.0)
@@ -399,8 +397,34 @@ class MixerZone(MediaPlayerEntity):
         self._attr_source_list = self._build_source_list()
         self.schedule_update_ha_state()
 
-    def set_volume(self, level):
-        """Set the volume level from the mixer."""
+    def maybe_update_volume_level_from_device(self, level):
+        """Maybe update volume state from device response (may reject stale responses).
+        
+        This is a read callback that updates state from device responses. It may not
+        apply the update if the response appears to be stale (sent before our pending command).
+        """
+        # Parse level first so we can check staleness before modifying any state
+        level_int = 62 if level == "mute" else int(level)
+        
+        # Check for stale response BEFORE modifying any state
+        # Ignore stale responses during confirmation window (extends protocol debounce protection)
+        # After protocol debounce completes and command is sent, there's a ~0.8s window until
+        # confirmation response arrives. During this window, old heartbeat responses could arrive
+        # from queries sent BEFORE our command. These stale responses would flip the slider back.
+        # We reject them by only accepting responses that match our pending request.
+        # Trade-off: Physical knob changes during this ~1s window are temporarily "lost" until
+        # next heartbeat (~10s). Acceptable because typically only one person controls a zone at
+        # a time, and they won't simultaneously adjust both the HA slider and physical knob.
+        if self._pending_volume is not None and self._pending_raw_volume_level is not None:
+            if level_int != self._pending_raw_volume_level:
+                # Stale response from before our command - reject without modifying state
+                _LOGGER.debug(
+                    f"Rejecting stale volume response for zone {self.zone_id}: "
+                    f"got {level_int}, expecting {self._pending_raw_volume_level}"
+                )
+                return
+        
+        # Response accepted - now modify state
         if level == "mute":
             self._is_volume_muted = True
             self._attr_is_volume_muted = True
@@ -408,10 +432,8 @@ class MixerZone(MediaPlayerEntity):
         else:
             self._is_volume_muted = False
             self._attr_is_volume_muted = False
-            # Convert DCM1 level to HA volume (0.0-1.0)
-            # Linear mapping in dB space: volume = 1 - (level / range)
-            level_int = int(level)
             self._raw_volume_level = level_int
+            
             if level_int >= self._volume_db_range:
                 new_volume = 0.0  # Below usable range maps to 0%
             else:
@@ -420,21 +442,21 @@ class MixerZone(MediaPlayerEntity):
             # Check if this confirms a pending user request or is an external change
             # If we have a pending volume, check if device level matches what user requested
             if self._pending_volume is not None:
-                if self._pending_volume == 0.0:
-                    expected_level = self._volume_db_range  # 0% maps to max attenuation
-                else:
-                    expected_level = round(self._volume_db_range * (1.0 - self._pending_volume))
+                # Use stored raw level for exact comparison (avoids recalculation)
+                expected_level = self._pending_raw_volume_level
                 
                 if expected_level == level_int:
                     # Device confirmed user's request - commit pending to confirmed
                     self._volume_level = self._pending_volume
                     self._pending_volume = None
+                    self._pending_raw_volume_level = None
                     self._attr_volume_level = self._volume_level
                 else:
                     # Device reports different level - external change (physical knob)
                     # Override pending with actual device state
                     self._volume_level = new_volume
                     self._pending_volume = None
+                    self._pending_raw_volume_level = None
                     self._attr_volume_level = new_volume
             else:
                 # No pending request - this is either initial state or external change
@@ -479,8 +501,9 @@ class MixerZone(MediaPlayerEntity):
             level = max(0, min(self._volume_db_range, level))  # Clamp to valid range
         
         # Store user's request as pending (uncommitted)
-        # If optimistic UI enabled, show immediately; otherwise wait for confirmation
+        # Store both HA volume and raw device level for exact confirmation matching
         self._pending_volume = volume
+        self._pending_raw_volume_level = level
         if self._use_optimistic_volume:
             self._attr_volume_level = volume  # UI shows pending state
             self.schedule_update_ha_state()  # Update UI immediately
@@ -563,6 +586,7 @@ class MixerGroup(MediaPlayerEntity):
         self._attr_state = MediaPlayerState.ON
         self._volume_level = None  # Confirmed volume from device
         self._pending_volume = None  # User's uncommitted volume request
+        self._pending_raw_volume_level = None  # Raw device level for pending request (0-62)
         self._is_volume_muted = False
         self._attr_is_volume_muted = False
         self._attr_volume_level = None
@@ -642,13 +666,7 @@ class MixerGroup(MediaPlayerEntity):
             
             self._attr_device_info["name"] = display_name
         self.schedule_update_ha_state()
-    def set_source(self, source_id):
-        """Set the active source."""
-        # Find source by ID
-        source = self._mixer.sources_by_id.get(source_id)
-        if source:
-            self._attr_source = source.name
-            self.schedule_update_ha_state()
+    
     def set_source(self, source_id):
         """Set the active source."""
         # Find source by ID
@@ -693,8 +711,27 @@ class MixerGroup(MediaPlayerEntity):
         self._attr_source_list = self._build_source_list()
         self.schedule_update_ha_state()
 
-    def set_volume(self, level):
-        """Set the volume level from the mixer."""
+    def maybe_update_volume_level_from_device(self, level):
+        """Maybe update volume state from device response (may reject stale responses).
+        
+        This is a read callback that updates state from device responses. It may not
+        apply the update if the response appears to be stale (sent before our pending command).
+        """
+        # Parse level first so we can check staleness before modifying any state
+        level_int = 62 if level == "mute" else int(level)
+        
+        # Check for stale response BEFORE modifying any state
+        # See MixerZone.maybe_update_volume_level_from_device for detailed explanation
+        if self._pending_volume is not None and self._pending_raw_volume_level is not None:
+            if level_int != self._pending_raw_volume_level:
+                # Stale response from before our command - reject without modifying state
+                _LOGGER.debug(
+                    f"Rejecting stale volume response for group {self.group_id}: "
+                    f"got {level_int}, expecting {self._pending_raw_volume_level}"
+                )
+                return
+        
+        # Response accepted - now modify state
         if level == "mute":
             self._is_volume_muted = True
             self._attr_is_volume_muted = True
@@ -702,10 +739,8 @@ class MixerGroup(MediaPlayerEntity):
         else:
             self._is_volume_muted = False
             self._attr_is_volume_muted = False
-            # Convert DCM1 level to HA volume (0.0-1.0)
-            # Linear mapping in dB space: volume = 1 - (level / range)
-            level_int = int(level)
             self._raw_volume_level = level_int
+            
             if level_int >= self._volume_db_range:
                 new_volume = 0.0  # Below usable range maps to 0%
             else:
@@ -717,21 +752,21 @@ class MixerGroup(MediaPlayerEntity):
             # If no pending → regular state update (heartbeat polling)
             if self._pending_volume is not None:
                 # We have a pending user request - check if device confirmed it
-                if self._pending_volume == 0.0:
-                    expected_level = self._volume_db_range  # 0% maps to max attenuation
-                else:
-                    expected_level = round(self._volume_db_range * (1.0 - self._pending_volume))
+                # Use stored raw level for exact comparison (avoids recalculation)
+                expected_level = self._pending_raw_volume_level
                 
                 if expected_level == level_int:
                     # Device confirmed our pending request - commit it
                     self._volume_level = self._pending_volume
                     self._pending_volume = None
+                    self._pending_raw_volume_level = None
                     self._attr_volume_level = self._volume_level
                 else:
                     # Device reports different level - external change (physical control)
                     # Override pending with actual device state
                     self._volume_level = new_volume
                     self._pending_volume = None
+                    self._pending_raw_volume_level = None
                     self._attr_volume_level = new_volume
             else:
                 # No pending request - regular state update
@@ -776,8 +811,9 @@ class MixerGroup(MediaPlayerEntity):
             level = max(0, min(self._volume_db_range, level))  # Clamp to valid range
         
         # Store user's request as pending (uncommitted)
-        # If optimistic UI enabled, show immediately; otherwise wait for confirmation
+        # Store both HA volume and raw device level for exact confirmation matching
         self._pending_volume = volume
+        self._pending_raw_volume_level = level
         if self._use_optimistic_volume:
             self._attr_volume_level = volume  # UI shows pending state
             self.schedule_update_ha_state()  # Update UI immediately
