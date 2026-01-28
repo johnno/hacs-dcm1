@@ -281,6 +281,7 @@ class MixerZone(MediaPlayerEntity):
         self._volume_level = None  # Confirmed volume from device
         self._pending_volume = None  # User's uncommitted volume request
         self._pending_raw_volume_level = None  # Raw device level for pending request (0-62)
+        self._pending_volume_rejected_count = 0  # Count of rejected volume responses (for timeout recovery)
         self._is_volume_muted = False
         self._raw_volume_level = None  # Last raw device volume level (0-62)
         self._pre_mute_volume = None  # HA volume level before muting (0.0-1.0)
@@ -417,12 +418,25 @@ class MixerZone(MediaPlayerEntity):
         # a time, and they won't simultaneously adjust both the HA slider and physical knob.
         if self._pending_volume is not None and self._pending_raw_volume_level is not None:
             if level_int != self._pending_raw_volume_level:
-                # Stale response from before our command - reject without modifying state
-                _LOGGER.debug(
-                    f"Rejecting stale volume response for zone {self.zone_id}: "
-                    f"got {level_int}, expecting {self._pending_raw_volume_level}"
-                )
-                return
+                # Stale response from before our command - reject unless we've timed out
+                self._pending_volume_rejected_count += 1                # Retry strategy options: count 1 = wait/see (likely stale during confirmation),
+                # count 2 = could re-issue command (mitigation), count 3 = give up (accept device)                if self._pending_volume_rejected_count >= 3:
+                    # After 3 rejections (~30s), our command may have been lost - accept device state
+                    _LOGGER.warning(
+                        f"Zone {self.zone_id}: Rejected 3 volume responses, "
+                        f"our command may have been lost. Accepting device state."
+                    )
+                    self._pending_volume = None
+                    self._pending_raw_volume_level = None
+                    self._pending_volume_rejected_count = 0
+                    # Fall through to accept this response
+                else:
+                    _LOGGER.debug(
+                        f"Rejecting stale volume response for zone {self.zone_id}: "
+                        f"got {level_int}, expecting {self._pending_raw_volume_level} "
+                        f"(rejection {self._pending_volume_rejected_count}/3)"
+                    )
+                    return
         
         # Response accepted - now modify state
         if level == "mute":
@@ -450,6 +464,7 @@ class MixerZone(MediaPlayerEntity):
                     self._volume_level = self._pending_volume
                     self._pending_volume = None
                     self._pending_raw_volume_level = None
+                    self._pending_volume_rejected_count = 0
                     self._attr_volume_level = self._volume_level
                 else:
                     # Device reports different level - external change (physical knob)
@@ -457,6 +472,7 @@ class MixerZone(MediaPlayerEntity):
                     self._volume_level = new_volume
                     self._pending_volume = None
                     self._pending_raw_volume_level = None
+                    self._pending_volume_rejected_count = 0
                     self._attr_volume_level = new_volume
             else:
                 # No pending request - this is either initial state or external change
@@ -504,6 +520,7 @@ class MixerZone(MediaPlayerEntity):
         # Store both HA volume and raw device level for exact confirmation matching
         self._pending_volume = volume
         self._pending_raw_volume_level = level
+        self._pending_volume_rejected_count = 0  # Reset counter on new command
         if self._use_optimistic_volume:
             self._attr_volume_level = volume  # UI shows pending state
             self.schedule_update_ha_state()  # Update UI immediately
@@ -587,6 +604,7 @@ class MixerGroup(MediaPlayerEntity):
         self._volume_level = None  # Confirmed volume from device
         self._pending_volume = None  # User's uncommitted volume request
         self._pending_raw_volume_level = None  # Raw device level for pending request (0-62)
+        self._pending_volume_rejected_count = 0  # Count of rejected volume responses (for timeout recovery)
         self._is_volume_muted = False
         self._attr_is_volume_muted = False
         self._attr_volume_level = None
@@ -724,12 +742,27 @@ class MixerGroup(MediaPlayerEntity):
         # See MixerZone.maybe_update_volume_level_from_device for detailed explanation
         if self._pending_volume is not None and self._pending_raw_volume_level is not None:
             if level_int != self._pending_raw_volume_level:
-                # Stale response from before our command - reject without modifying state
-                _LOGGER.debug(
-                    f"Rejecting stale volume response for group {self.group_id}: "
-                    f"got {level_int}, expecting {self._pending_raw_volume_level}"
-                )
-                return
+                # Stale response from before our command - reject unless we've timed out
+                self._pending_volume_rejected_count += 1
+                # Retry strategy options: count 1 = wait/see (likely stale during confirmation),
+                # count 2 = could re-issue command (mitigation), count 3 = give up (accept device)
+                if self._pending_volume_rejected_count >= 3:
+                    # After 3 rejections (~30s), our command may have been lost - accept device state
+                    _LOGGER.warning(
+                        f"Group {self.group_id}: Rejected 3 volume responses, "
+                        f"our command may have been lost. Accepting device state."
+                    )
+                    self._pending_volume = None
+                    self._pending_raw_volume_level = None
+                    self._pending_volume_rejected_count = 0
+                    # Fall through to accept this response
+                else:
+                    _LOGGER.debug(
+                        f"Rejecting stale volume response for group {self.group_id}: "
+                        f"got {level_int}, expecting {self._pending_raw_volume_level} "
+                        f"(rejection {self._pending_volume_rejected_count}/3)"
+                    )
+                    return
         
         # Response accepted - now modify state
         if level == "mute":
@@ -760,6 +793,7 @@ class MixerGroup(MediaPlayerEntity):
                     self._volume_level = self._pending_volume
                     self._pending_volume = None
                     self._pending_raw_volume_level = None
+                    self._pending_volume_rejected_count = 0
                     self._attr_volume_level = self._volume_level
                 else:
                     # Device reports different level - external change (physical control)
@@ -767,6 +801,7 @@ class MixerGroup(MediaPlayerEntity):
                     self._volume_level = new_volume
                     self._pending_volume = None
                     self._pending_raw_volume_level = None
+                    self._pending_volume_rejected_count = 0
                     self._attr_volume_level = new_volume
             else:
                 # No pending request - regular state update
@@ -814,6 +849,7 @@ class MixerGroup(MediaPlayerEntity):
         # Store both HA volume and raw device level for exact confirmation matching
         self._pending_volume = volume
         self._pending_raw_volume_level = level
+        self._pending_volume_rejected_count = 0  # Reset counter on new command
         if self._use_optimistic_volume:
             self._attr_volume_level = volume  # UI shows pending state
             self.schedule_update_ha_state()  # Update UI immediately
