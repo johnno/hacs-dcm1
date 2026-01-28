@@ -285,7 +285,8 @@ class MixerZone(MediaPlayerEntity):
         self._pending_volume = None  # User's uncommitted volume request
         self._is_volume_muted = False
         self._raw_volume_level = None  # Last raw device volume level (0-62)
-        self._pre_mute_volume = None  # Volume level before muting
+        self._pre_mute_volume = None  # HA volume level before muting (0.0-1.0)
+        self._pre_mute_raw_volume = None  # Raw device level before muting (0-62)
         
         # Try to get initial source state
         initial_source_id = mixer.status_of_zone(zone_id)
@@ -513,17 +514,19 @@ class MixerZone(MediaPlayerEntity):
     def mute_volume(self, mute: bool) -> None:
         """Mute or unmute the volume."""
         if mute:
-            # Store current volume before muting so we can restore it
+            # Store both HA volume and raw device level before muting so we can restore exactly
             self._pre_mute_volume = self._volume_level
+            self._pre_mute_raw_volume = self._raw_volume_level
             self._mixer.set_volume(zone_id=self.zone_id, level=62)  # 62 = mute
         else:
             # Unmute to last known level before muting, or default to mid-range
-            if self._pre_mute_volume is not None:
-                # Restore to the volume that was active before muting
-                level = round(self._volume_db_range * (1.0 - self._pre_mute_volume)) if self._pre_mute_volume > 0.0 else self._volume_db_range
-                self._pre_mute_volume = None  # Clear the stored value
+            if self._pre_mute_raw_volume is not None:
+                # Restore using raw device level (avoids rounding, preserves sub-minimum levels)
+                level = self._pre_mute_raw_volume
+                self._pre_mute_volume = None
+                self._pre_mute_raw_volume = None
             elif self._volume_level is not None and self._volume_level > 0.0:
-                # Fallback: use current volume if no pre-mute value stored
+                # Fallback: recalculate from HA volume if no raw level stored
                 # Linear: level = range * (1 - volume)
                 level = round(self._volume_db_range * (1.0 - self._volume_level))
             else:
@@ -564,7 +567,8 @@ class MixerGroup(MediaPlayerEntity):
         self._attr_is_volume_muted = False
         self._attr_volume_level = None
         self._raw_volume_level = None  # Last raw device volume level (0-62)
-        self._pre_mute_volume = None  # Volume level before muting
+        self._pre_mute_volume = None  # HA volume level before muting (0.0-1.0)
+        self._pre_mute_raw_volume = None  # Raw device level before muting (0-62)
         
         # Try to get initial source state
         initial_source_id = mixer.protocol.get_group_source(group_id)
@@ -795,17 +799,19 @@ class MixerGroup(MediaPlayerEntity):
     def mute_volume(self, mute: bool) -> None:
         """Mute or unmute the volume."""
         if mute:
-            # Store current volume before muting so we can restore it
+            # Store both HA volume and raw device level before muting so we can restore exactly
             self._pre_mute_volume = self._volume_level
+            self._pre_mute_raw_volume = self._raw_volume_level
             self._mixer.set_group_volume(group_id=self.group_id, level=62)  # 62 = mute
         else:
             # Unmute to last known level before muting, or default to mid-range
-            if self._pre_mute_volume is not None:
-                # Restore to the volume that was active before muting
-                level = round(self._volume_db_range * (1.0 - self._pre_mute_volume)) if self._pre_mute_volume > 0.0 else self._volume_db_range
-                self._pre_mute_volume = None  # Clear the stored value
+            if self._pre_mute_raw_volume is not None:
+                # Restore using raw device level (avoids rounding, preserves sub-minimum levels)
+                level = self._pre_mute_raw_volume
+                self._pre_mute_volume = None
+                self._pre_mute_raw_volume = None
             elif self._volume_level is not None and self._volume_level > 0.0:
-                # Fallback: use current volume if no pre-mute value stored
+                # Fallback: recalculate from HA volume if no raw level stored
                 # Linear: level = range * (1 - volume)
                 level = round(self._volume_db_range * (1.0 - self._volume_level))
             else:
