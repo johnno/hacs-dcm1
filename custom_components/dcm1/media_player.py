@@ -94,8 +94,8 @@ async def async_setup_entry(
         _LOGGER.warning("wait_for_zone_line_inputs not available - using sleep fallback")
         await asyncio.sleep(7.0)
     
-    my_listener = MyListener()
-    mixer.register_listener(my_listener)
+    mixer_listener = MixerListener()
+    mixer.register_listener(mixer_listener)
     entities = []
 
     # Setup the individual zone entities
@@ -107,7 +107,7 @@ async def async_setup_entry(
         _LOGGER.info("DEBUG: Zone %s enabled_inputs returned: %s", zone_id, enabled_inputs)
         _LOGGER.info("DEBUG: Zone %s type: %s, bool: %s, len: %s", zone_id, type(enabled_inputs), bool(enabled_inputs), len(enabled_inputs) if enabled_inputs else 0)
         mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range)
-        my_listener.add_mixer_zone_entity(zone.id, mixer_zone)
+        mixer_listener.add_mixer_zone_entity(zone.id, mixer_zone)
         entities.append(mixer_zone)
 
     # Setup entities for enabled groups only
@@ -122,7 +122,7 @@ async def async_setup_entry(
             _LOGGER.info("DEBUG: Group %s enabled_inputs returned: %s", group_id, enabled_inputs)
             _LOGGER.info("DEBUG: Type of enabled_inputs: %s, bool check: %s", type(enabled_inputs), bool(enabled_inputs))
             mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range)
-            my_listener.add_mixer_group_entity(group.id, mixer_group)
+            mixer_listener.add_mixer_group_entity(group.id, mixer_group)
             entities.append(mixer_group)
         else:
             _LOGGER.info("Skipping DISABLED group: group_id: %s, %s", group.id, group.name)
@@ -135,7 +135,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class MyListener(SourceChangeListener):
+class MixerListener(SourceChangeListener):
     """Listener to direct messages to correct entities."""
 
     def __init__(self) -> None:
@@ -233,10 +233,10 @@ class MyListener(SourceChangeListener):
         _LOGGER.warning("DCM1 Mixer disconnected")
         for entity in self.mixer_zone_entities.values():
             _LOGGER.debug("Updating zone %s", entity)
-            entity.set_state(MediaPlayerState.UNAVAILABLE)
+            entity.set_state("unavailable")
         for entity in self.mixer_group_entities.values():
             _LOGGER.debug("Updating group %s", entity)
-            entity.set_state(MediaPlayerState.UNAVAILABLE)
+            entity.set_state("unavailable")
 
     def power_changed(self, power: bool):
         """Power changed callback - DCM1 has physical switch only, no power control."""
