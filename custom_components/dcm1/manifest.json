@@ -13,6 +13,6 @@
     "pydcm1 @ git+https://github.com/johnno/pydcm1.git@main"
   ],
   "ssdp": [],
-  "version": "0.1",
+  "version": "0.2",
   "zeroconf": []
 }
