@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from pydcm1.listener import SourceChangeListener
+from pydcm1.listener import MixerResponseListener
 from pydcm1.mixer import DCM1Mixer
 
 from homeassistant.components.media_player import (
@@ -46,68 +46,41 @@ async def async_setup_entry(
     use_optimistic_volume = config_entry.data.get(CONF_OPTIMISTIC_VOLUME, True)
     volume_db_range = config_entry.data.get("volume_db_range", 40)  # dB range for slider (40 = practical, 61 = full)
     
-    # Query zone and source labels BEFORE creating entities
-    _LOGGER.info("Querying zone labels, source labels, and volume levels")
-    mixer.query_all_labels()
+    # Query all mixer state (zones, sources, groups, line inputs, volume, status)
+    _LOGGER.info("Querying all mixer state from device")
+    mixer.query_status()
     
-    # Wait for label queries to complete (with 10s timeout)
-    if hasattr(mixer, 'wait_for_zone_source_labels'):
-        _LOGGER.info("Waiting for zone/source labels...")
-        labels_loaded = await mixer.wait_for_zone_source_labels(timeout=10.0)
-        if not labels_loaded:
-            _LOGGER.warning("Timeout waiting for zone/source labels - some names may not be correct")
-        else:
-            _LOGGER.info("Zone/source labels loaded successfully")
-    else:
-        _LOGGER.warning("wait_for_zone_source_labels not available - using sleep fallback")
-        await asyncio.sleep(3.0)
+    # Wait for all data to be received from device
+    _LOGGER.info("Waiting for source labels...")
+    sources_loaded = await mixer.wait_for_source_labels(timeout=7.0)
+    if not sources_loaded:
+        _LOGGER.warning("Timeout waiting for source labels - some names may not be correct")
     
-    # Query group information (labels, status, volume, and line inputs)
-    _LOGGER.info("Querying group information")
-    mixer.query_all_groups()
-    # Wait for group data to be received (with 10s timeout)
-    if hasattr(mixer, 'wait_for_group_data'):
-        _LOGGER.info("Waiting for group data...")
-        groups_loaded = await mixer.wait_for_group_data(timeout=10.0)
-        if not groups_loaded:
-            _LOGGER.warning("Timeout waiting for group data - some groups may not be available")
-        else:
-            _LOGGER.info("Group data loaded successfully")
-    else:
-        _LOGGER.warning("wait_for_group_data not available - using sleep fallback")
-        await asyncio.sleep(5.0)
+    _LOGGER.info("Waiting for zone data (labels, sources, line inputs, volume)...")
+    zones_loaded = await mixer.wait_for_zone_data(timeout=12.0)
+    if not zones_loaded:
+        _LOGGER.warning("Timeout waiting for zone data - some zones may have incomplete information")
     
-    # Query line input enables for all zones BEFORE creating entities
-    _LOGGER.info("Querying line input enables for all zones")
-    for zone_id in mixer.zones_by_id.keys():
-        mixer.query_line_inputs(zone_id)
+    _LOGGER.info("Waiting for group data (status, labels, sources, line inputs, volume)...")
+    groups_loaded = await mixer.wait_for_group_data(timeout=12.0)
+    if not groups_loaded:
+        _LOGGER.warning("Timeout waiting for group data - some groups may not be available")
     
-    # Wait for line input queries to complete (with 10s timeout)
-    if hasattr(mixer, 'wait_for_zone_line_inputs'):
-        _LOGGER.info("Waiting for zone line inputs...")
-        line_inputs_loaded = await mixer.wait_for_zone_line_inputs(timeout=10.0)
-        if not line_inputs_loaded:
-            _LOGGER.warning("Timeout waiting for zone line inputs - some zones may have incomplete source lists")
-        else:
-            _LOGGER.info("Zone line inputs loaded successfully")
-    else:
-        _LOGGER.warning("wait_for_zone_line_inputs not available - using sleep fallback")
-        await asyncio.sleep(7.0)
-    
-    mixer_listener = MixerListener()
-    mixer.register_listener(mixer_listener)
+    # Mixer state is now fully populated. Build entities first, then register listener.
     entities = []
+    zone_entities: dict[int, MixerZone] = {}
+    group_entities: dict[int, MixerGroup] = {}
 
     # Setup the individual zone entities
     _LOGGER.info("DEBUG: _zone_line_inputs_map contents: %s", mixer.protocol._zone_line_inputs_map)
     for zone_id, zone in mixer.zones_by_id.items():
         _LOGGER.debug("Setting up zone entity for zone_id: %s, %s", zone.id, zone.name)
         # Get enabled line inputs for this zone
-        enabled_inputs = mixer.get_enabled_line_inputs(zone_id)
+        enabled_inputs = mixer.get_zone_enabled_line_inputs(zone_id)
         _LOGGER.info("DEBUG: Zone %s enabled_inputs returned: %s", zone_id, enabled_inputs)
         _LOGGER.info("DEBUG: Zone %s type: %s, bool: %s, len: %s", zone_id, type(enabled_inputs), bool(enabled_inputs), len(enabled_inputs) if enabled_inputs else 0)
         mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range)
-        mixer_listener.add_mixer_zone_entity(zone.id, mixer_zone)
+        zone_entities[zone.id] = mixer_zone
         entities.append(mixer_zone)
 
     # Setup entities for enabled groups only
@@ -118,118 +91,36 @@ async def async_setup_entry(
         if group.enabled:
             _LOGGER.info("Creating group entity for group_id: %s, %s (ENABLED)", group.id, group.name)
             # Get enabled line inputs for this group
-            enabled_inputs = mixer.protocol.get_enabled_group_line_inputs(group_id)
+            enabled_inputs = mixer.get_group_enabled_line_inputs(group_id)
             _LOGGER.info("DEBUG: Group %s enabled_inputs returned: %s", group_id, enabled_inputs)
             _LOGGER.info("DEBUG: Type of enabled_inputs: %s, bool check: %s", type(enabled_inputs), bool(enabled_inputs))
             mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range)
-            mixer_listener.add_mixer_group_entity(group.id, mixer_group)
+            group_entities[group.id] = mixer_group
             entities.append(mixer_group)
         else:
             _LOGGER.info("Skipping DISABLED group: group_id: %s, %s", group.id, group.name)
 
-    # Request a status update so all listeners are notified with current status
-    _LOGGER.info("Refreshing status after setup")
+    # All entities created with current mixer state. Register listener for updates.
+    mixer_listener = MixerListener(zone_entities, group_entities)
+    mixer.register_listener(mixer_listener)
     _LOGGER.info("Total entities to add: %s", len(entities))
-    mixer.update_status()
-    
     async_add_entities(entities)
 
-
-class MixerListener(SourceChangeListener):
+class MixerListener(MixerResponseListener):
     """Listener to direct messages to correct entities."""
 
-    def __init__(self) -> None:
-        """Init."""
-        self.mixer_zone_entities: dict[int, MixerZone] = {}
-        self.mixer_group_entities: dict[int, MixerGroup] = {}
-
-    def add_mixer_zone_entity(self, zone_id, entity):
-        """Add a Mixer Zone Entity."""
-        self.mixer_zone_entities[zone_id] = entity
-
-    def add_mixer_group_entity(self, group_id, entity):
-        """Add a Mixer Group Entity."""
-        self.mixer_group_entities[group_id] = entity
-
-    def source_changed(self, zone_id: int, source_id: int):
-        """Source changed callback."""
-        _LOGGER.debug(
-            "Source changed Zone ID %s changed to source ID: %s", zone_id, source_id
-        )
-        entity = self.mixer_zone_entities.get(zone_id)
-        if entity:
-            _LOGGER.debug("Updating entity for source changed")
-            entity.set_source(source_id)
-
-    def zone_label_changed(self, zone_id: int, label: str):
-        """Zone label changed callback."""
-        _LOGGER.debug("Zone label changed for Zone ID %s to: %s", zone_id, label)
-        entity = self.mixer_zone_entities.get(zone_id)
-        if entity:
-            entity.set_name(label)
-
-    def source_label_changed(self, source_id: int, label: str):
-        """Source label changed callback."""
-        _LOGGER.debug("Source label changed for Source ID %s to: %s", source_id, label)
-        # Update all zone entities with new source list
-        for entity in self.mixer_zone_entities.values():
-            entity.update_source_list()
-        # Update all group entities with new source list
-        for entity in self.mixer_group_entities.values():
-            entity.update_source_list()
-
-    def line_inputs_changed(self, zone_id: int, enabled_inputs: dict[int, bool]):
-        """Line inputs enabled status changed callback."""
-        _LOGGER.debug("Line inputs changed for Zone ID %s: %s", zone_id, enabled_inputs)
-        entity = self.mixer_zone_entities.get(zone_id)
-        if entity:
-            entity.update_enabled_inputs(enabled_inputs)
-
-    def volume_level_changed(self, zone_id: int, level):
-        """Volume level changed callback."""
-        _LOGGER.debug("Volume level changed for Zone ID %s to: %s", zone_id, level)
-        entity = self.mixer_zone_entities.get(zone_id)
-        if entity:
-            entity.maybe_update_volume_level_from_device(level)
-
-    def group_label_changed(self, group_id: int, label: str):
-        """Group label changed callback."""
-        _LOGGER.debug("Group label changed for Group ID %s to: %s", group_id, label)
-        entity = self.mixer_group_entities.get(group_id)
-        if entity:
-            entity.set_name(label)
-
-    def group_status_changed(self, group_id: int, enabled: bool, zones: list[int]):
-        """Group status changed callback."""
-        _LOGGER.debug("Group status changed for Group ID %s: enabled=%s, zones=%s", group_id, enabled, zones)
-        # Note: If group is disabled at runtime, the entity will remain but won't receive updates
-
-    def group_line_inputs_changed(self, group_id: int, enabled_inputs: dict[int, bool]):
-        """Group line inputs enabled status changed callback."""
-        _LOGGER.debug("Group line inputs changed for Group ID %s: %s", group_id, enabled_inputs)
-        entity = self.mixer_group_entities.get(group_id)
-        if entity:
-            entity.update_enabled_inputs(enabled_inputs)
-
-    def group_volume_changed(self, group_id: int, level):
-        """Group volume level changed callback."""
-        _LOGGER.debug("Group volume level changed for Group ID %s to: %s", group_id, level)
-        entity = self.mixer_group_entities.get(group_id)
-        if entity:
-            entity.maybe_update_volume_level_from_device(level)
-
-    def group_source_changed(self, group_id: int, source_id: int):
-        """Group source changed callback."""
-        _LOGGER.debug("Group source changed for Group ID %s to source ID: %s", group_id, source_id)
-        entity = self.mixer_group_entities.get(group_id)
-        if entity:
-            entity.set_source(source_id)
+    def __init__(
+        self,
+        zone_entities: dict[int, "MixerZone"] | None = None,
+        group_entities: dict[int, "MixerGroup"] | None = None,
+    ) -> None:
+        self.mixer_zone_entities: dict[int, MixerZone] = zone_entities or {}
+        self.mixer_group_entities: dict[int, MixerGroup] = group_entities or {}
 
     def connected(self):
-        """Mixer connected callback. No action as status will be updated."""
+        pass  # No action as status will be updated
 
     def disconnected(self):
-        """Mixer disconnected callback."""
         _LOGGER.warning("DCM1 Mixer disconnected")
         for entity in self.mixer_zone_entities.values():
             _LOGGER.debug("Updating zone %s", entity)
@@ -238,16 +129,68 @@ class MixerListener(SourceChangeListener):
             _LOGGER.debug("Updating group %s", entity)
             entity.set_state("unavailable")
 
-    def power_changed(self, power: bool):
-        """Power changed callback - DCM1 has physical switch only, no power control."""
-        pass
+    def source_label_received(self, source_id: int, label: str):
+        _LOGGER.debug("Source label received for Source ID %s: %s", source_id, label)
+        for entity in self.mixer_zone_entities.values():
+            entity.update_source_list()
+        for entity in self.mixer_group_entities.values():
+            entity.update_source_list()
+
+    def zone_label_received(self, zone_id: int, label: str):
+        _LOGGER.debug("Zone label received for Zone ID %s: %s", zone_id, label)
+        entity = self.mixer_zone_entities.get(zone_id)
+        if entity:
+            entity.set_name(label)
+
+    def zone_line_inputs_received(self, zone_id: int, enabled_inputs: dict[int, bool]):
+        _LOGGER.debug("Line inputs received for Zone ID %s: %s", zone_id, enabled_inputs)
+        entity = self.mixer_zone_entities.get(zone_id)
+        if entity:
+            entity.update_enabled_inputs(enabled_inputs)
+
+    def group_status_received(self, group_id: int, enabled: bool, zones: list[int]):
+        _LOGGER.debug("Group status received for Group ID %s: enabled=%s, zones=%s", group_id, enabled, zones)
+        # Note: If group is disabled at runtime, the entity will remain but won't receive updates
+
+    def group_label_received(self, group_id: int, label: str):
+        _LOGGER.debug("Group label received for Group ID %s: %s", group_id, label)
+        entity = self.mixer_group_entities.get(group_id)
+        if entity:
+            entity.set_name(label)
+
+    def group_line_inputs_received(self, group_id: int, enabled_inputs: dict[int, bool]):
+        _LOGGER.debug("Group line inputs received for Group ID %s: %s", group_id, enabled_inputs)
+        entity = self.mixer_group_entities.get(group_id)
+        if entity:
+            entity.update_enabled_inputs(enabled_inputs)
+
+    def zone_source_received(self, zone_id: int, source_id: int):
+        _LOGGER.debug("Source received for Zone ID %s: source ID %s", zone_id, source_id)
+        entity = self.mixer_zone_entities.get(zone_id)
+        if entity:
+            _LOGGER.debug("Updating entity for source changed")
+            entity.set_source(source_id)
+
+    def zone_volume_level_received(self, zone_id: int, level):
+        _LOGGER.debug("Volume level received for Zone ID %s: %s", zone_id, level)
+        entity = self.mixer_zone_entities.get(zone_id)
+        if entity:
+            entity.maybe_update_volume_level_from_device(level)
+
+    def group_source_received(self, group_id: int, source_id: int):
+        _LOGGER.debug("Group source received for Group ID %s: source ID %s", group_id, source_id)
+        entity = self.mixer_group_entities.get(group_id)
+        if entity:
+            entity.set_source(source_id)
+
+    def group_volume_level_received(self, group_id: int, level):
+        _LOGGER.debug("Group volume level received for Group ID %s: %s", group_id, level)
+        entity = self.mixer_group_entities.get(group_id)
+        if entity:
+            entity.maybe_update_volume_level_from_device(level)
 
     def error(self, error_message: str):
-        """Error callback not required for us."""
-
-    def source_change_requested(self, zone_id: int, source_id: int):
-        """Ignore callback from API - not required for us."""
-
+        pass  # Not required for us
 
 class MixerZone(MediaPlayerEntity):
     """Represents the Zones of the DCM1 Mixer."""
@@ -288,12 +231,12 @@ class MixerZone(MediaPlayerEntity):
         self._pre_mute_raw_volume = None  # Raw device level before muting (0-62)
         
         # Try to get initial source state
-        initial_source_id = mixer.status_of_zone(zone_id)
+        initial_source_id = mixer.get_zone_source(zone_id)
         if initial_source_id and initial_source_id in mixer.sources_by_id:
             self._attr_source = mixer.sources_by_id[initial_source_id].name
         
         # Try to get initial volume level
-        initial_volume = mixer.protocol.get_volume_level(zone_id)
+        initial_volume = mixer.get_zone_volume_level(zone_id)
         if initial_volume is not None:
             level_int = 62 if initial_volume == "mute" else int(initial_volume)
             self._raw_volume_level = level_int
@@ -527,7 +470,7 @@ class MixerZone(MediaPlayerEntity):
             self._attr_volume_level = volume  # UI shows pending state
             self.schedule_update_ha_state()  # Update UI immediately
         
-        self._mixer.set_volume(zone_id=self.zone_id, level=level)
+        self._mixer.set_zone_volume(zone_id=self.zone_id, level=level)
 
     def volume_up(self) -> None:
         """Increase volume by one step."""
@@ -559,7 +502,7 @@ class MixerZone(MediaPlayerEntity):
             # Store both HA volume and raw device level before muting so we can restore exactly
             self._pre_mute_volume = self._volume_level
             self._pre_mute_raw_volume = self._raw_volume_level
-            self._mixer.set_volume(zone_id=self.zone_id, level=62)  # 62 = mute
+            self._mixer.set_zone_volume(zone_id=self.zone_id, level=62)  # 62 = mute
         else:
             # Unmute to last known level before muting, or default to mid-range
             if self._pre_mute_raw_volume is not None:
@@ -573,7 +516,7 @@ class MixerZone(MediaPlayerEntity):
                 level = round(self._volume_db_range * (1.0 - self._volume_level))
             else:
                 level = self._volume_db_range // 2  # Default to mid-range if slider at 0% or unknown
-            self._mixer.set_volume(zone_id=self.zone_id, level=level)
+            self._mixer.set_zone_volume(zone_id=self.zone_id, level=level)
 class MixerGroup(MediaPlayerEntity):
     """Represents an enabled Group of the DCM1 Mixer."""
 
@@ -615,7 +558,7 @@ class MixerGroup(MediaPlayerEntity):
         self._pre_mute_raw_volume = None  # Raw device level before muting (0-62)
         
         # Try to get initial source state
-        initial_source_id = mixer.protocol.get_group_source(group_id)
+        initial_source_id = mixer.get_group_source(group_id)
         if initial_source_id and initial_source_id in mixer.sources_by_id:
             self._attr_source = mixer.sources_by_id[initial_source_id].name
             _LOGGER.info(f"Group {group_id} initial source: {initial_source_id} ({self._attr_source})")
@@ -623,7 +566,7 @@ class MixerGroup(MediaPlayerEntity):
             _LOGGER.warning(f"Group {group_id} initial source is None or invalid: {initial_source_id}")
         
         # Try to get initial volume level
-        initial_volume = mixer.protocol.get_group_volume_level(group_id)
+        initial_volume = mixer.get_group_volume_level(group_id)
         _LOGGER.info(f"Group {group_id} initial volume from protocol: {initial_volume}")
         if initial_volume is not None:
             level_int = 62 if initial_volume == "mute" else int(initial_volume)
