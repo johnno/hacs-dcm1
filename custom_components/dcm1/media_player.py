@@ -72,7 +72,6 @@ async def async_setup_entry(
     group_entities: dict[int, MixerGroup] = {}
 
     # Setup the individual zone entities
-    _LOGGER.info("DEBUG: _zone_line_inputs_map contents: %s", mixer.protocol._zone_line_inputs_map)
     for zone_id, zone in mixer.zones_by_id.items():
         _LOGGER.debug("Setting up zone entity for zone_id: %s, %s", zone.id, zone.name)
         # Get enabled line inputs for this zone
@@ -85,7 +84,6 @@ async def async_setup_entry(
 
     # Setup entities for enabled groups only
     _LOGGER.info("Checking groups for entity creation: %s groups found", len(mixer.groups_by_id))
-    _LOGGER.info("DEBUG: _group_line_inputs_map contents: %s", mixer.protocol._group_line_inputs_map)
     for group_id, group in mixer.groups_by_id.items():
         _LOGGER.info("Group %s: name='%s', enabled=%s, zones=%s", group.id, group.name, group.enabled, group.zones)
         if group.enabled:
