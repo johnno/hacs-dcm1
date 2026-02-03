@@ -115,7 +115,7 @@ class DCM1ZoneEQ(NumberEntity):
     _attr_mode = NumberMode.SLIDER
     _attr_native_min_value = -14
     _attr_native_max_value = 14
-    _attr_native_step = 1
+    _attr_native_step = 2  # EQ only supports even values (-14, -12, -10, ... 0, +2, +4, ... +14)
     _attr_native_unit_of_measurement = "dB"
 
     def __init__(
