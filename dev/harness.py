@@ -405,8 +405,6 @@ async def _run_real_device_eq_entity(host: str, port: int, zone: int, treble: in
                 use_zone_labels=True,
                 entity_name_suffix="",
             )
-            # Register with parent zone
-            mixer_zone.register_eq_entity(parameter, entity)
             eq_entities[parameter] = entity
             print(f"  Created EQ {parameter} entity: {entity._attr_unique_id}")
         

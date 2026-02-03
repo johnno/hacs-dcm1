@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from pydcm1.mixer import DCM1Mixer
+from pydcm1.listener import MixerResponseListener
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
@@ -18,6 +19,46 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import CONF_ENTITY_NAME_SUFFIX, CONF_USE_ZONE_LABELS, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class EQEntityListener(MixerResponseListener):
+    """Listener that updates EQ number entities when device reports changes."""
+
+    def __init__(self, eq_entities: dict[tuple[int, str], "DCM1ZoneEQ"]):
+        """Initialize listener with mapping of (zone_id, parameter) -> entity."""
+        self._eq_entities = eq_entities
+
+    def zone_eq_treble_received(self, zone_id: int, treble: int):
+        """Update treble entity when device reports change."""
+        entity = self._eq_entities.get((zone_id, "treble"))
+        if entity:
+            entity.update_value(treble)
+
+    def zone_eq_mid_received(self, zone_id: int, mid: int):
+        """Update mid entity when device reports change."""
+        entity = self._eq_entities.get((zone_id, "mid"))
+        if entity:
+            entity.update_value(mid)
+
+    def zone_eq_bass_received(self, zone_id: int, bass: int):
+        """Update bass entity when device reports change."""
+        entity = self._eq_entities.get((zone_id, "bass"))
+        if entity:
+            entity.update_value(bass)
+
+    def zone_eq_received(self, zone_id: int, treble: int, mid: int, bass: int):
+        """Update all EQ entities when device reports combined EQ query response."""
+        treble_entity = self._eq_entities.get((zone_id, "treble"))
+        if treble_entity:
+            treble_entity.update_value(treble)
+        
+        mid_entity = self._eq_entities.get((zone_id, "mid"))
+        if mid_entity:
+            mid_entity.update_value(mid)
+        
+        bass_entity = self._eq_entities.get((zone_id, "bass"))
+        if bass_entity:
+            bass_entity.update_value(bass)
 
 
 async def async_setup_entry(
@@ -33,28 +74,11 @@ async def async_setup_entry(
 
     _LOGGER.debug("Setting up DCM1 EQ number entities for %s", name)
 
-    # Get zone entities from media_player platform so we can register EQ entities with their parent zones
-    zone_entities = hass.data[DOMAIN].get("zone_entities", {}).get(config_entry.entry_id, {})
-    if not zone_entities:
-        # media_player may still be setting up; wait briefly for it to populate
-        for _ in range(20):  # up to ~5 seconds
-            await asyncio.sleep(0.25)
-            zone_entities = hass.data[DOMAIN].get("zone_entities", {}).get(config_entry.entry_id, {})
-            if zone_entities:
-                break
-    if not zone_entities:
-        _LOGGER.warning("Zone entities not found - media_player platform not ready")
-        return
-
     entities = []
+    eq_entity_map: dict[tuple[int, str], DCM1ZoneEQ] = {}
 
-    # Create EQ entities for each zone and register them with their parent zone entity
+    # Create EQ entities for each zone
     for zone_id, zone in mixer.zones_by_id.items():
-        zone_entity = zone_entities.get(zone_id)
-        if not zone_entity:
-            _LOGGER.warning("Zone entity %s not found, skipping EQ entities", zone_id)
-            continue
-            
         for parameter in ["treble", "mid", "bass"]:
             entity = DCM1ZoneEQ(
                 zone_id=zone_id,
@@ -66,9 +90,12 @@ async def async_setup_entry(
                 use_zone_labels=use_zone_labels,
                 entity_name_suffix=entity_name_suffix,
             )
-            # Register entity with its parent zone (zone owns its EQ entities)
-            zone_entity.register_eq_entity(parameter, entity)
             entities.append(entity)
+            eq_entity_map[(zone_id, parameter)] = entity
+
+    # Register listener with mixer to receive EQ updates
+    eq_listener = EQEntityListener(eq_entity_map)
+    mixer.register_listener(eq_listener)
 
     _LOGGER.info("Adding %s EQ number entities", len(entities))
     async_add_entities(entities)

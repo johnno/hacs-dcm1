@@ -47,8 +47,8 @@ async def async_setup_entry(
     volume_db_range = config_entry.data.get("volume_db_range", 40)  # dB range for slider (40 = practical, 61 = full)
     
     # Query all mixer state (zones, sources, groups, line inputs, volume, status)
-    _LOGGER.info("Querying all mixer state from device")
-    mixer.query_status()
+    #_LOGGER.info("Querying all mixer state from device")
+    #mixer.query_status()
     
     # Wait for all data to be received from device
     _LOGGER.info("Waiting for source labels...")
@@ -101,9 +101,6 @@ async def async_setup_entry(
     # All entities created with current mixer state. Register listener for updates.
     mixer_listener = MixerListener(zone_entities, group_entities)
     mixer.register_listener(mixer_listener)
-    
-    # Store zone entities in hass.data so number platform can register EQ entities with their parent zones
-    hass.data[DOMAIN].setdefault("zone_entities", {})[config_entry.entry_id] = zone_entities
     
     _LOGGER.info("Total entities to add: %s", len(entities))
     async_add_entities(entities)
@@ -200,34 +197,6 @@ class MixerListener(MixerResponseListener):
     def error(self, error_message: str):
         pass  # Not required for us
 
-    def zone_eq_received(self, zone_id: int, treble: int, mid: int, bass: int):
-        """Update zone's EQ entities when combined query response received."""
-        _LOGGER.debug("EQ combined received for Zone %s: T=%+d M=%+d B=%+d", zone_id, treble, mid, bass)
-        zone_entity = self.mixer_zone_entities.get(zone_id)
-        if zone_entity:
-            zone_entity.update_eq_values(treble=treble, mid=mid, bass=bass)
-
-    def zone_eq_treble_received(self, zone_id: int, treble: int):
-        """Update zone's EQ treble entity when value received."""
-        _LOGGER.debug("EQ treble received for Zone %s: %+d", zone_id, treble)
-        zone_entity = self.mixer_zone_entities.get(zone_id)
-        if zone_entity:
-            zone_entity.update_eq_values(treble=treble)
-
-    def zone_eq_mid_received(self, zone_id: int, mid: int):
-        """Update zone's EQ mid entity when value received."""
-        _LOGGER.debug("EQ mid received for Zone %s: %+d", zone_id, mid)
-        zone_entity = self.mixer_zone_entities.get(zone_id)
-        if zone_entity:
-            zone_entity.update_eq_values(mid=mid)
-
-    def zone_eq_bass_received(self, zone_id: int, bass: int):
-        """Update zone's EQ bass entity when value received."""
-        _LOGGER.debug("EQ bass received for Zone %s: %+d", zone_id, bass)
-        zone_entity = self.mixer_zone_entities.get(zone_id)
-        if zone_entity:
-            zone_entity.update_eq_values(bass=bass)
-
 class MixerZone(MediaPlayerEntity):
     """Represents the Zones of the DCM1 Mixer."""
 
@@ -265,11 +234,6 @@ class MixerZone(MediaPlayerEntity):
         self._raw_volume_level = None  # Last raw device volume level (0-62)
         self._pre_mute_volume = None  # HA volume level before muting (0.0-1.0)
         self._pre_mute_raw_volume = None  # Raw device level before muting (0-62)
-        
-        # EQ number entities owned by this zone (registered by number platform)
-        self._eq_treble_entity = None
-        self._eq_mid_entity = None
-        self._eq_bass_entity = None
         
         # Try to get initial source state
         initial_source_id = mixer.get_zone_source(zone_id)
@@ -325,15 +289,8 @@ class MixerZone(MediaPlayerEntity):
         self.schedule_update_ha_state()
 
     def set_available(self, available: bool):
-        """Set availability for zone and all child EQ entities."""
+        """Set availability for zone."""
         self._attr_available = available
-        # Also update child EQ entities
-        if self._eq_treble_entity:
-            self._eq_treble_entity.set_available(available)
-        if self._eq_mid_entity:
-            self._eq_mid_entity.set_available(available)
-        if self._eq_bass_entity:
-            self._eq_bass_entity.set_available(available)
         self.schedule_update_ha_state()
 
     def set_name(self, name: str):
@@ -393,24 +350,6 @@ class MixerZone(MediaPlayerEntity):
         self._enabled_line_inputs = enabled_inputs
         self._attr_source_list = self._build_source_list()
         self.schedule_update_ha_state()
-
-    def register_eq_entity(self, parameter: str, entity) -> None:
-        """Register an EQ number entity owned by this zone."""
-        if parameter == "treble":
-            self._eq_treble_entity = entity
-        elif parameter == "mid":
-            self._eq_mid_entity = entity
-        elif parameter == "bass":
-            self._eq_bass_entity = entity
-
-    def update_eq_values(self, treble: int = None, mid: int = None, bass: int = None) -> None:
-        """Update EQ values for owned number entities."""
-        if treble is not None and self._eq_treble_entity:
-            self._eq_treble_entity.update_value(treble)
-        if mid is not None and self._eq_mid_entity:
-            self._eq_mid_entity.update_value(mid)
-        if bass is not None and self._eq_bass_entity:
-            self._eq_bass_entity.update_value(bass)
 
     def maybe_update_volume_level_from_device(self, level):
         """Maybe update volume state from device response (may reject stale responses).
