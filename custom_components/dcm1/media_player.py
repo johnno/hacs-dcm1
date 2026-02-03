@@ -101,11 +101,15 @@ async def async_setup_entry(
     # All entities created with current mixer state. Register listener for updates.
     mixer_listener = MixerListener(zone_entities, group_entities)
     mixer.register_listener(mixer_listener)
+    
+    # Store listener in hass.data so number platform can register EQ entities with it
+    hass.data[DOMAIN].setdefault("listeners", {})[config_entry.entry_id] = mixer_listener
+    
     _LOGGER.info("Total entities to add: %s", len(entities))
     async_add_entities(entities)
 
 class MixerListener(MixerResponseListener):
-    """Listener to direct messages to correct entities."""
+    """Listener to direct messages to correct entities (zones, groups, and numbers)."""
 
     def __init__(
         self,
@@ -114,6 +118,7 @@ class MixerListener(MixerResponseListener):
     ) -> None:
         self.mixer_zone_entities: dict[int, MixerZone] = zone_entities or {}
         self.mixer_group_entities: dict[int, MixerGroup] = group_entities or {}
+        self.eq_entities: dict[tuple[int, str], any] = {}  # (zone_id, parameter) -> DCM1ZoneEQ
 
     def connected(self):
         pass  # No action as status will be updated
@@ -189,6 +194,47 @@ class MixerListener(MixerResponseListener):
 
     def error(self, error_message: str):
         pass  # Not required for us
+
+    def zone_eq_received(self, zone_id: int, treble: int, mid: int, bass: int):
+        """Update EQ entities when combined query response received."""
+        _LOGGER.debug("EQ combined received for Zone %s: T=%+d M=%+d B=%+d", zone_id, treble, mid, bass)
+        
+        treble_entity = self.eq_entities.get((zone_id, "treble"))
+        if treble_entity:
+            treble_entity.update_value(treble)
+        
+        mid_entity = self.eq_entities.get((zone_id, "mid"))
+        if mid_entity:
+            mid_entity.update_value(mid)
+        
+        bass_entity = self.eq_entities.get((zone_id, "bass"))
+        if bass_entity:
+            bass_entity.update_value(bass)
+
+    def zone_eq_treble_received(self, zone_id: int, treble: int):
+        """Update EQ treble entity when value received."""
+        _LOGGER.debug("EQ treble received for Zone %s: %+d", zone_id, treble)
+        treble_entity = self.eq_entities.get((zone_id, "treble"))
+        if treble_entity:
+            treble_entity.update_value(treble)
+
+    def zone_eq_mid_received(self, zone_id: int, mid: int):
+        """Update EQ mid entity when value received."""
+        _LOGGER.debug("EQ mid received for Zone %s: %+d", zone_id, mid)
+        mid_entity = self.eq_entities.get((zone_id, "mid"))
+        if mid_entity:
+            mid_entity.update_value(mid)
+
+    def zone_eq_bass_received(self, zone_id: int, bass: int):
+        """Update EQ bass entity when value received."""
+        _LOGGER.debug("EQ bass received for Zone %s: %+d", zone_id, bass)
+        bass_entity = self.eq_entities.get((zone_id, "bass"))
+        if bass_entity:
+            bass_entity.update_value(bass)
+
+    def register_eq_entity(self, zone_id: int, parameter: str, entity) -> None:
+        """Register an EQ number entity to receive callbacks."""
+        self.eq_entities[(zone_id, parameter)] = entity
 
 class MixerZone(MediaPlayerEntity):
     """Represents the Zones of the DCM1 Mixer."""

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from pydcm1.listener import MixerResponseListener
 from pydcm1.mixer import DCM1Mixer
 
 from homeassistant.components.number import NumberEntity, NumberMode
@@ -33,10 +32,15 @@ async def async_setup_entry(
 
     _LOGGER.debug("Setting up DCM1 EQ number entities for %s", name)
 
-    entities = []
-    eq_entities: dict[tuple[int, str], DCM1ZoneEQ] = {}  # (zone_id, parameter) -> entity
+    # Get the shared listener from media_player platform
+    mixer_listener = hass.data[DOMAIN].get("listeners", {}).get(config_entry.entry_id)
+    if not mixer_listener:
+        _LOGGER.error("MixerListener not found - media_player platform must be loaded first")
+        return
 
-    # Create EQ entities for each zone
+    entities = []
+
+    # Create EQ entities for each zone and register them with the shared listener
     for zone_id, zone in mixer.zones_by_id.items():
         for parameter in ["treble", "mid", "bass"]:
             entity = DCM1ZoneEQ(
@@ -49,99 +53,12 @@ async def async_setup_entry(
                 use_zone_labels=use_zone_labels,
                 entity_name_suffix=entity_name_suffix,
             )
-            eq_entities[(zone_id, parameter)] = entity
+            # Register entity with the shared listener
+            mixer_listener.register_eq_entity(zone_id, parameter, entity)
             entities.append(entity)
-
-    # Register listener to receive EQ updates
-    eq_listener = EQListener(eq_entities)
-    mixer.register_listener(eq_listener)
 
     _LOGGER.info("Adding %s EQ number entities", len(entities))
     async_add_entities(entities)
-
-
-class EQListener(MixerResponseListener):
-    """Listener to direct EQ messages to correct entities."""
-
-    def __init__(self, eq_entities: dict[tuple[int, str], DCM1ZoneEQ]) -> None:
-        self.eq_entities = eq_entities
-
-    def zone_eq_received(self, zone_id: int, treble: int, mid: int, bass: int):
-        """Update EQ entities when values are received from device (combined query response)."""
-        _LOGGER.debug("EQ combined received for Zone %s: T=%+d M=%+d B=%+d", zone_id, treble, mid, bass)
-        
-        treble_entity = self.eq_entities.get((zone_id, "treble"))
-        if treble_entity:
-            treble_entity.update_value(treble)
-        
-        mid_entity = self.eq_entities.get((zone_id, "mid"))
-        if mid_entity:
-            mid_entity.update_value(mid)
-        
-        bass_entity = self.eq_entities.get((zone_id, "bass"))
-        if bass_entity:
-            bass_entity.update_value(bass)
-
-    def zone_eq_treble_received(self, zone_id: int, treble: int):
-        """Update EQ treble entity when value is received from device."""
-        _LOGGER.debug("EQ treble received for Zone %s: %+d", zone_id, treble)
-        treble_entity = self.eq_entities.get((zone_id, "treble"))
-        if treble_entity:
-            treble_entity.update_value(treble)
-
-    def zone_eq_mid_received(self, zone_id: int, mid: int):
-        """Update EQ mid entity when value is received from device."""
-        _LOGGER.debug("EQ mid received for Zone %s: %+d", zone_id, mid)
-        mid_entity = self.eq_entities.get((zone_id, "mid"))
-        if mid_entity:
-            mid_entity.update_value(mid)
-
-    def zone_eq_bass_received(self, zone_id: int, bass: int):
-        """Update EQ bass entity when value is received from device."""
-        _LOGGER.debug("EQ bass received for Zone %s: %+d", zone_id, bass)
-        bass_entity = self.eq_entities.get((zone_id, "bass"))
-        if bass_entity:
-            bass_entity.update_value(bass)
-
-    # Implement required interface methods (no-op for EQ listener)
-    def connected(self):
-        pass
-
-    def disconnected(self):
-        pass
-
-    def source_label_received(self, source_id: int, label: str):
-        pass
-
-    def zone_label_received(self, zone_id: int, label: str):
-        pass
-
-    def zone_line_inputs_received(self, zone_id: int, line_inputs: dict[int, bool]):
-        pass
-
-    def zone_source_received(self, zone_id: int, source_id: int):
-        pass
-
-    def zone_volume_level_received(self, zone_id: int, level):
-        pass
-
-    def group_label_received(self, group_id: int, label: str):
-        pass
-
-    def group_status_received(self, group_id: int, enabled: bool, zones: list[int]):
-        pass
-
-    def group_line_inputs_received(self, group_id: int, line_inputs: dict[int, bool]):
-        pass
-
-    def group_source_received(self, group_id: int, source_id: int):
-        pass
-
-    def group_volume_level_received(self, group_id: int, level):
-        pass
-
-    def error(self, error_message: str):
-        pass
 
 
 class DCM1ZoneEQ(NumberEntity):
