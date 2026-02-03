@@ -294,7 +294,7 @@ class MixerZone(MediaPlayerEntity):
             self._attr_volume_level = self._volume_level
 
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
-        unique_base = f"dcm1_{self._mixer.hostname.replace('.', '_')}"
+        unique_base = f"dcm1_{self._mixer._hostname.replace('.', '_')}"
         self._attr_unique_id = f"{unique_base}_zone{zone_id}"
 
         # Build display name based on configuration
@@ -645,7 +645,7 @@ class MixerGroup(MediaPlayerEntity):
             _LOGGER.warning(f"Group {group_id} initial volume is None - volume data not loaded yet")
 
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
-        unique_base = f"dcm1_{self._mixer.hostname.replace('.', '_')}"
+        unique_base = f"dcm1_{self._mixer._hostname.replace('.', '_')}"
         self._attr_unique_id = f"{unique_base}_group{group_id}"
 
         # Build display name based on configuration

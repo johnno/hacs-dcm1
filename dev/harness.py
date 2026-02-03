@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import types
 from pathlib import Path
 
 HACS = Path(__file__).resolve().parents[1]  # .../dcm1/hacs-dcm1
@@ -87,23 +88,56 @@ class _Const:
 
 class _Platform:
     MEDIA_PLAYER = "media_player"
+    NUMBER = "number"
 
-# Inject stubs into sys.modules before importing media_player
-import types
+class _NumberMode:
+    SLIDER = "slider"
+
+class _NumberEntity:
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_mode = _NumberMode.SLIDER
+    _attr_native_min_value = -14
+    _attr_native_max_value = 14
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = "dB"
+    _attr_native_value = None
+    
+    async def async_set_native_value(self, value: float) -> None:
+        self._attr_native_value = value
+    
+    def async_write_ha_state(self):
+        pass
+
+class _DeviceInfo:
+    def __init__(self, identifiers=None, name=None, manufacturer=None, model=None, via_device=None):
+        self.identifiers = identifiers
+        self.name = name
+        self.manufacturer = manufacturer
+        self.model = model
+        self.via_device = via_device
+
+# ---- Inject number stubs -------------------------------------------------
+
 
 homeassistant = types.ModuleType("homeassistant")
 components = types.ModuleType("homeassistant.components")
 media_player = types.ModuleType("homeassistant.components.media_player")
+number = types.ModuleType("homeassistant.components.number")
 config_entries = types.ModuleType("homeassistant.config_entries")
 const = types.ModuleType("homeassistant.const")
 core = types.ModuleType("homeassistant.core")
 helpers = types.ModuleType("homeassistant.helpers")
+helpers_entity = types.ModuleType("homeassistant.helpers.entity")
 helpers_entity_platform = types.ModuleType("homeassistant.helpers.entity_platform")
 
 media_player.MediaPlayerDeviceClass = _MediaPlayerDeviceClass
 media_player.MediaPlayerEntity = _MediaPlayerEntity
 media_player.MediaPlayerEntityFeature = _MediaPlayerEntityFeature
 media_player.MediaPlayerState = _MediaPlayerState
+number.NumberEntity = _NumberEntity
+number.NumberMode = _NumberMode
+helpers_entity.DeviceInfo = _DeviceInfo
 config_entries.ConfigEntry = _ConfigEntry
 const.CONF_NAME = _Const.CONF_NAME
 const.CONF_HOST = _Const.CONF_HOST
@@ -115,10 +149,12 @@ helpers_entity_platform.AddEntitiesCallback = _AddEntitiesCallback
 sys.modules["homeassistant"] = homeassistant
 sys.modules["homeassistant.components"] = components
 sys.modules["homeassistant.components.media_player"] = media_player
+sys.modules["homeassistant.components.number"] = number
 sys.modules["homeassistant.config_entries"] = config_entries
 sys.modules["homeassistant.const"] = const
 sys.modules["homeassistant.core"] = core
 sys.modules["homeassistant.helpers"] = helpers
+sys.modules["homeassistant.helpers.entity"] = helpers_entity
 sys.modules["homeassistant.helpers.entity_platform"] = helpers_entity_platform
 
 # ---- Fake mixer ------------------------------------------------------------
@@ -310,6 +346,205 @@ async def _run_real_device_entity(host: str, port: int, zone: int, volume: float
         print("Connection closed.")
 
 
+async def _run_real_device_eq_entity(host: str, port: int, zone: int, treble: int = None, mid: int = None, bass: int = None) -> None:
+    """Test EQ settings using high-level number entity API."""
+    from pydcm1.mixer import DCM1Mixer
+    from custom_components.dcm1 import media_player as mp
+    from custom_components.dcm1 import number
+
+    print(f"Connecting to DCM1 at {host}:{port}...")
+    mixer = DCM1Mixer(host, port, enable_heartbeat=False)
+    
+    try:
+        await mixer.async_connect()
+        print(f"Connected. Waiting for initial state to load...")
+        await asyncio.sleep(2)
+        
+        print(f"\nCreating MixerZone entity for zone {zone}...")
+        zone_obj = mixer.zones_by_id.get(zone)
+        if not zone_obj:
+            print(f"ERROR: Zone {zone} not found!")
+            return
+        
+        enabled_inputs = mixer.get_zone_enabled_line_inputs(zone)
+        mixer_zone = mp.MixerZone(
+            zone_id=zone_obj.id,
+            zone_name=zone_obj.name,
+            mixer=mixer,
+            use_zone_labels=True,
+            entity_name_suffix="",
+            enabled_line_inputs=enabled_inputs,
+            use_optimistic_volume=True,
+            volume_db_range=40
+        )
+        
+        # Create listener
+        zone_entities = {zone: mixer_zone}
+        
+        # Wrap listener to add debug output
+        class DebugMixerListener(mp.MixerListener):
+            def zone_eq_treble_received(self, zone_id: int, treble: int):
+                print(f"DEBUG CALLBACK: zone_eq_treble_received(zone_id={zone_id}, treble={treble:+d})")
+                super().zone_eq_treble_received(zone_id, treble)
+            
+            def zone_eq_mid_received(self, zone_id: int, mid: int):
+                print(f"DEBUG CALLBACK: zone_eq_mid_received(zone_id={zone_id}, mid={mid:+d})")
+                super().zone_eq_mid_received(zone_id, mid)
+            
+            def zone_eq_bass_received(self, zone_id: int, bass: int):
+                print(f"DEBUG CALLBACK: zone_eq_bass_received(zone_id={zone_id}, bass={bass:+d})")
+                super().zone_eq_bass_received(zone_id, bass)
+        
+        listener = DebugMixerListener(zone_entities, {})
+        mixer.register_listener(listener)
+        
+        print(f"Zone entity created: Zone {mixer_zone.zone_id} ({zone_obj.name})")
+        print(f"DEBUG - Debug listener registered")
+        
+        # Create EQ number entities
+        print(f"\nCreating EQ number entities...")
+        eq_entities = {}
+        for parameter in ["treble", "mid", "bass"]:
+            entity = number.DCM1ZoneEQ(
+                zone_id=zone_obj.id,
+                zone_name=zone_obj.name,
+                parameter=parameter,
+                mixer=mixer,
+                config_entry_id="test_entry",
+                device_name="DCM1",
+                use_zone_labels=True,
+                entity_name_suffix="",
+            )
+            # Register with parent zone
+            mixer_zone.register_eq_entity(parameter, entity)
+            eq_entities[parameter] = entity
+            print(f"  Created EQ {parameter} entity: {entity._attr_unique_id}")
+        
+        # Query current EQ settings for this specific zone
+        print(f"\nQuerying current EQ settings for zone {zone}...")
+        print("DEBUG - Sending query_status...")
+        mixer.query_status()
+        print("DEBUG - Waiting 5 seconds for responses...")
+        await asyncio.sleep(5)
+        
+        # Debug: Check what's in the zone object directly
+        print(f"\nDEBUG - Zone object values from mixer after 5 sec wait:")
+        print(f"  zone_obj.eq_treble: {zone_obj.eq_treble}")
+        print(f"  zone_obj.eq_mid: {zone_obj.eq_mid}")
+        print(f"  zone_obj.eq_bass: {zone_obj.eq_bass}")
+        
+        # Read initial values from entities
+        print(f"\nInitial EQ values for zone {zone} from entities:")
+        for parameter in ["treble", "mid", "bass"]:
+            entity = eq_entities[parameter]
+            value = entity._attr_native_value if entity._attr_native_value is not None else 0
+            print(f"  {parameter.capitalize()}: {value:+d} dB")
+        
+        # Set EQ values if provided
+        if treble is not None or mid is not None or bass is not None:
+            if treble is not None:
+                print(f"\nSetting zone {zone} EQ treble to {treble:+d}...")
+                await eq_entities["treble"].async_set_native_value(float(treble))
+                await asyncio.sleep(1)
+            
+            if mid is not None:
+                print(f"Setting zone {zone} EQ mid to {mid:+d}...")
+                await eq_entities["mid"].async_set_native_value(float(mid))
+                await asyncio.sleep(1)
+            
+            if bass is not None:
+                print(f"Setting zone {zone} EQ bass to {bass:+d}...")
+                await eq_entities["bass"].async_set_native_value(float(bass))
+                await asyncio.sleep(1)
+            
+            print("Waiting for device callbacks...")
+            await asyncio.sleep(1)
+            
+            # Read updated values from entities
+            print(f"Updated EQ values from entities:")
+            for parameter in ["treble", "mid", "bass"]:
+                entity = eq_entities[parameter]
+                print(f"  {parameter.capitalize()}: {entity._attr_native_value:+d} dB")
+        
+        print("Done.")
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        mixer.close()
+        print("Connection closed.")
+
+
+async def _run_real_device_eq(host: str, port: int, zone: int, treble: int = None, mid: int = None, bass: int = None) -> None:
+    """Test EQ settings using low-level pydcm1 mixer API directly."""
+    from pydcm1.mixer import DCM1Mixer
+
+    print(f"Connecting to DCM1 at {host}:{port}...")
+    mixer = DCM1Mixer(host, port, enable_heartbeat=False)
+    
+    try:
+        await mixer.async_connect()
+        print(f"Connected. Waiting for initial state to load...")
+        await asyncio.sleep(2)
+        
+        # Query current EQ settings
+        print(f"\nQuerying current EQ settings for zone {zone}...")
+        mixer.query_status()
+        await asyncio.sleep(2)  # Wait longer for EQ query responses
+        
+        zone_obj = mixer.zones_by_id.get(zone)
+        if zone_obj:
+            treble_str = f"{zone_obj.eq_treble:+d}" if zone_obj.eq_treble is not None else "N/A"
+            mid_str = f"{zone_obj.eq_mid:+d}" if zone_obj.eq_mid is not None else "N/A"
+            bass_str = f"{zone_obj.eq_bass:+d}" if zone_obj.eq_bass is not None else "N/A"
+            print(f"Current EQ - Treble: {treble_str}, Mid: {mid_str}, Bass: {bass_str}")
+        
+        # If setting all three parameters, use combined method
+        if treble is not None and mid is not None and bass is not None:
+            print(f"\nSetting zone {zone} EQ to T:{treble:+d}, M:{mid:+d}, B:{bass:+d}...")
+            mixer.set_zone_eq(zone_id=zone, treble=treble, mid=mid, bass=bass)
+            await asyncio.sleep(2)  # Wait longer for command to complete
+        else:
+            # Set individual EQ parameters if provided
+            # Note: Individual setters require all values to be known
+            if treble is not None:
+                print(f"\nSetting zone {zone} EQ treble to {treble:+d}...")
+                mixer.set_zone_eq_treble(zone_id=zone, level=treble)
+                await asyncio.sleep(1)
+            
+            if mid is not None:
+                print(f"Setting zone {zone} EQ mid to {mid:+d}...")
+                mixer.set_zone_eq_mid(zone_id=zone, level=mid)
+                await asyncio.sleep(1)
+            
+            if bass is not None:
+                print(f"Setting zone {zone} EQ bass to {bass:+d}...")
+                mixer.set_zone_eq_bass(zone_id=zone, level=bass)
+                await asyncio.sleep(1)
+        
+        # Query again to verify
+        print(f"\nVerifying EQ settings...")
+        mixer.query_status()
+        await asyncio.sleep(2)  # Wait longer for query responses
+        
+        zone_obj = mixer.zones_by_id.get(zone)
+        if zone_obj:
+            treble_str = f"{zone_obj.eq_treble:+d}" if zone_obj.eq_treble is not None else "N/A"
+            mid_str = f"{zone_obj.eq_mid:+d}" if zone_obj.eq_mid is not None else "N/A"
+            bass_str = f"{zone_obj.eq_bass:+d}" if zone_obj.eq_bass is not None else "N/A"
+            print(f"Updated EQ - Treble: {treble_str}, Mid: {mid_str}, Bass: {bass_str}")
+        
+        print("Done.")
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        mixer.close()
+        print("Connection closed.")
+
+
 def _run_stub_harness() -> None:
     from custom_components.dcm1 import media_player as mp
 
@@ -340,13 +575,27 @@ def main():
     parser.add_argument("--level", type=int, help="Volume level 0-61 or 62=mute (low-level test only)")
     parser.add_argument("--volume", type=float, help="Volume 0.0-1.0 (entity test only, default 0.5)")
     parser.add_argument("--entity", action="store_true", help="Test MixerZone entity API instead of low-level mixer")
+    parser.add_argument("--eq-treble", type=int, help="Set EQ treble (-14 to +14)")
+    parser.add_argument("--eq-mid", type=int, help="Set EQ mid (-14 to +14)")
+    parser.add_argument("--eq-bass", type=int, help="Set EQ bass (-14 to +14)")
+    parser.add_argument("--eq-entity", action="store_true", help="Test EQ via number entities instead of low-level API")
     args = parser.parse_args()
 
-    print(f"Args: host={args.host}, port={args.port}, zone={args.zone}, level={args.level}, volume={args.volume}, entity={args.entity}")
+    print(f"Args: host={args.host}, port={args.port}, zone={args.zone}, level={args.level}, volume={args.volume}, entity={args.entity}, eq_entity={args.eq_entity}")
 
     if args.host:
         print(f"Running real device test...")
-        if args.entity:
+        
+        # Check if EQ parameters are provided
+        if args.eq_treble is not None or args.eq_mid is not None or args.eq_bass is not None:
+            # Test EQ functionality
+            if args.eq_entity:
+                # Test EQ via number entities
+                asyncio.run(_run_real_device_eq_entity(args.host, args.port, args.zone, args.eq_treble, args.eq_mid, args.eq_bass))
+            else:
+                # Test EQ via low-level mixer API
+                asyncio.run(_run_real_device_eq(args.host, args.port, args.zone, args.eq_treble, args.eq_mid, args.eq_bass))
+        elif args.entity:
             # Test entity API
             volume = args.volume if args.volume is not None else 0.5
             asyncio.run(_run_real_device_entity(args.host, args.port, args.zone, volume))
