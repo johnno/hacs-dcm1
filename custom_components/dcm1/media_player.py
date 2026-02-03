@@ -120,7 +120,13 @@ class MixerListener(MixerResponseListener):
         self.mixer_group_entities: dict[int, MixerGroup] = group_entities or {}
 
     def connected(self):
-        pass  # No action as status will be updated
+        _LOGGER.warning("DCM1 Mixer reconnected")
+        for entity in self.mixer_zone_entities.values():
+            _LOGGER.debug("Restoring zone %s to available", entity)
+            entity.set_state(MediaPlayerState.ON)
+        for entity in self.mixer_group_entities.values():
+            _LOGGER.debug("Restoring group %s to available", entity)
+            entity.set_state(MediaPlayerState.ON)
 
     def disconnected(self):
         _LOGGER.warning("DCM1 Mixer disconnected")
