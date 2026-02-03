@@ -123,19 +123,19 @@ class MixerListener(MixerResponseListener):
         _LOGGER.warning("DCM1 Mixer reconnected")
         for entity in self.mixer_zone_entities.values():
             _LOGGER.debug("Restoring zone %s to available", entity)
-            entity.set_state(MediaPlayerState.ON)
+            entity.set_available(True)
         for entity in self.mixer_group_entities.values():
             _LOGGER.debug("Restoring group %s to available", entity)
-            entity.set_state(MediaPlayerState.ON)
+            entity.set_available(True)
 
     def disconnected(self):
         _LOGGER.warning("DCM1 Mixer disconnected")
         for entity in self.mixer_zone_entities.values():
-            _LOGGER.debug("Updating zone %s", entity)
-            entity.set_state("unavailable")
+            _LOGGER.debug("Updating zone %s to unavailable", entity)
+            entity.set_available(False)
         for entity in self.mixer_group_entities.values():
-            _LOGGER.debug("Updating group %s", entity)
-            entity.set_state("unavailable")
+            _LOGGER.debug("Updating group %s to unavailable", entity)
+            entity.set_available(False)
 
     def source_label_received(self, source_id: int, label: str):
         _LOGGER.debug("Source label received for Source ID %s: %s", source_id, label)
@@ -322,6 +322,18 @@ class MixerZone(MediaPlayerEntity):
     def set_state(self, state):
         """Set the state."""
         self._attr_state = state
+        self.schedule_update_ha_state()
+
+    def set_available(self, available: bool):
+        """Set availability for zone and all child EQ entities."""
+        self._attr_available = available
+        # Also update child EQ entities
+        if self._eq_treble_entity:
+            self._eq_treble_entity.set_available(available)
+        if self._eq_mid_entity:
+            self._eq_mid_entity.set_available(available)
+        if self._eq_bass_entity:
+            self._eq_bass_entity.set_available(available)
         self.schedule_update_ha_state()
 
     def set_name(self, name: str):
@@ -673,6 +685,11 @@ class MixerGroup(MediaPlayerEntity):
     def set_state(self, state):
         """Set the state."""
         self._attr_state = state
+        self.schedule_update_ha_state()
+
+    def set_available(self, available: bool):
+        """Set availability for group."""
+        self._attr_available = available
         self.schedule_update_ha_state()
 
     def set_name(self, name: str):

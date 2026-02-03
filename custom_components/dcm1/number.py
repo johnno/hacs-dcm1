@@ -187,3 +187,8 @@ class DCM1ZoneEQ(NumberEntity):
             )
             self._attr_native_value = value
             self.async_write_ha_state()
+
+    def set_available(self, available: bool) -> None:
+        """Set availability for this EQ entity."""
+        self._attr_available = available
+        self.async_write_ha_state()
