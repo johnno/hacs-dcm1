@@ -352,14 +352,20 @@ async def _run_real_device_eq_entity(host: str, port: int, zone: int, treble: in
     from custom_components.dcm1 import media_player as mp
     from custom_components.dcm1 import number
 
+    # Ensure zone 8 only (live venue safety)
+    if zone != 8:
+        print(f"ERROR: This harness only works with zone 8 (to avoid affecting live venue zones 1-7)")
+        return
+
     print(f"Connecting to DCM1 at {host}:{port}...")
     mixer = DCM1Mixer(host, port, enable_heartbeat=False)
     
     try:
         await mixer.async_connect()
-        print(f"Connected. Waiting for initial state to load...")
-        await asyncio.sleep(2)
-        
+        # Wait for zone data
+        print(f"Waiting for zone data (including EQ)...")
+        await mixer.wait_for_zone_data(timeout=60.0)
+
         print(f"\nCreating MixerZone entity for zone {zone}...")
         zone_obj = mixer.zones_by_id.get(zone)
         if not zone_obj:
@@ -380,26 +386,10 @@ async def _run_real_device_eq_entity(host: str, port: int, zone: int, treble: in
         
         # Create listener
         zone_entities = {zone: mixer_zone}
-        
-        # Wrap listener to add debug output
-        class DebugMixerListener(mp.MixerListener):
-            def zone_eq_treble_received(self, zone_id: int, treble: int):
-                print(f"DEBUG CALLBACK: zone_eq_treble_received(zone_id={zone_id}, treble={treble:+d})")
-                super().zone_eq_treble_received(zone_id, treble)
-            
-            def zone_eq_mid_received(self, zone_id: int, mid: int):
-                print(f"DEBUG CALLBACK: zone_eq_mid_received(zone_id={zone_id}, mid={mid:+d})")
-                super().zone_eq_mid_received(zone_id, mid)
-            
-            def zone_eq_bass_received(self, zone_id: int, bass: int):
-                print(f"DEBUG CALLBACK: zone_eq_bass_received(zone_id={zone_id}, bass={bass:+d})")
-                super().zone_eq_bass_received(zone_id, bass)
-        
-        listener = DebugMixerListener(zone_entities, {})
+        listener = mp.MixerListener(zone_entities, {})
         mixer.register_listener(listener)
         
         print(f"Zone entity created: Zone {mixer_zone.zone_id} ({zone_obj.name})")
-        print(f"DEBUG - Debug listener registered")
         
         # Create EQ number entities
         print(f"\nCreating EQ number entities...")
@@ -420,21 +410,8 @@ async def _run_real_device_eq_entity(host: str, port: int, zone: int, treble: in
             eq_entities[parameter] = entity
             print(f"  Created EQ {parameter} entity: {entity._attr_unique_id}")
         
-        # Query current EQ settings for this specific zone
-        print(f"\nQuerying current EQ settings for zone {zone}...")
-        print("DEBUG - Sending query_status...")
-        mixer.query_status()
-        print("DEBUG - Waiting 5 seconds for responses...")
-        await asyncio.sleep(5)
-        
-        # Debug: Check what's in the zone object directly
-        print(f"\nDEBUG - Zone object values from mixer after 5 sec wait:")
-        print(f"  zone_obj.eq_treble: {zone_obj.eq_treble}")
-        print(f"  zone_obj.eq_mid: {zone_obj.eq_mid}")
-        print(f"  zone_obj.eq_bass: {zone_obj.eq_bass}")
-        
         # Read initial values from entities
-        print(f"\nInitial EQ values for zone {zone} from entities:")
+        print(f"\nInitial EQ values for zone 8 from entities:")
         for parameter in ["treble", "mid", "bass"]:
             entity = eq_entities[parameter]
             value = entity._attr_native_value if entity._attr_native_value is not None else 0
@@ -586,15 +563,13 @@ def main():
     if args.host:
         print(f"Running real device test...")
         
-        # Check if EQ parameters are provided
-        if args.eq_treble is not None or args.eq_mid is not None or args.eq_bass is not None:
-            # Test EQ functionality
-            if args.eq_entity:
-                # Test EQ via number entities
-                asyncio.run(_run_real_device_eq_entity(args.host, args.port, args.zone, args.eq_treble, args.eq_mid, args.eq_bass))
-            else:
-                # Test EQ via low-level mixer API
-                asyncio.run(_run_real_device_eq(args.host, args.port, args.zone, args.eq_treble, args.eq_mid, args.eq_bass))
+        # Check which test mode to run
+        if args.eq_entity:
+            # Test EQ via number entities
+            asyncio.run(_run_real_device_eq_entity(args.host, args.port, args.zone, args.eq_treble, args.eq_mid, args.eq_bass))
+        elif args.eq_treble is not None or args.eq_mid is not None or args.eq_bass is not None:
+            # Test EQ via low-level mixer API
+            asyncio.run(_run_real_device_eq(args.host, args.port, args.zone, args.eq_treble, args.eq_mid, args.eq_bass))
         elif args.entity:
             # Test entity API
             volume = args.volume if args.volume is not None else 0.5

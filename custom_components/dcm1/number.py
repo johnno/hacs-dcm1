@@ -100,7 +100,10 @@ class DCM1ZoneEQ(NumberEntity):
 
         # Set entity attributes
         self._attr_unique_id = f"{config_entry_id}_zone_{zone_id}_eq_{parameter}"
-        self._attr_name = f"EQ {parameter.capitalize()}"
+        display_zone_name = zone_name if self._use_zone_labels else f"Zone {zone_id}"
+        if self._entity_name_suffix:
+            display_zone_name = f"{display_zone_name} {self._entity_name_suffix}"
+        self._attr_name = f"{display_zone_name} EQ {parameter.capitalize()}"
         
         # Set icon based on parameter
         icon_map = {
