@@ -32,16 +32,21 @@ async def async_setup_entry(
 
     _LOGGER.debug("Setting up DCM1 EQ number entities for %s", name)
 
-    # Get the shared listener from media_player platform
-    mixer_listener = hass.data[DOMAIN].get("listeners", {}).get(config_entry.entry_id)
-    if not mixer_listener:
-        _LOGGER.error("MixerListener not found - media_player platform must be loaded first")
+    # Get zone entities from media_player platform so we can register EQ entities with their parent zones
+    zone_entities = hass.data[DOMAIN].get("zone_entities", {}).get(config_entry.entry_id, {})
+    if not zone_entities:
+        _LOGGER.error("Zone entities not found - media_player platform must be loaded first")
         return
 
     entities = []
 
-    # Create EQ entities for each zone and register them with the shared listener
+    # Create EQ entities for each zone and register them with their parent zone entity
     for zone_id, zone in mixer.zones_by_id.items():
+        zone_entity = zone_entities.get(zone_id)
+        if not zone_entity:
+            _LOGGER.warning("Zone entity %s not found, skipping EQ entities", zone_id)
+            continue
+            
         for parameter in ["treble", "mid", "bass"]:
             entity = DCM1ZoneEQ(
                 zone_id=zone_id,
@@ -53,8 +58,8 @@ async def async_setup_entry(
                 use_zone_labels=use_zone_labels,
                 entity_name_suffix=entity_name_suffix,
             )
-            # Register entity with the shared listener
-            mixer_listener.register_eq_entity(zone_id, parameter, entity)
+            # Register entity with its parent zone (zone owns its EQ entities)
+            zone_entity.register_eq_entity(parameter, entity)
             entities.append(entity)
 
     _LOGGER.info("Adding %s EQ number entities", len(entities))
