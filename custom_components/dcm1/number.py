@@ -195,8 +195,7 @@ class DCM1ZoneEQ(NumberEntity):
             identifiers={(DOMAIN, f"{unique_base}_zone{self.zone_id}")},
             name=display_name,
             manufacturer="Cloud Electronics",
-            model="DCM1 Zone",
-            via_device=(DOMAIN, self._config_entry_id),
+            model="DCM1 Zone Mixer",
         )
 
     async def async_set_native_value(self, value: float) -> None:
