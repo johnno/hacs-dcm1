@@ -74,6 +74,12 @@ async def async_setup_entry(
 
     _LOGGER.debug("Setting up DCM1 EQ number entities for %s", name)
 
+    # Wait for zone data (labels) to be received from device so we use correct names
+    _LOGGER.debug("Waiting for zone labels before creating EQ entities...")
+    zones_loaded = await mixer.wait_for_zone_data(timeout=12.0)
+    if not zones_loaded:
+        _LOGGER.warning("Timeout waiting for zone data - EQ entities may have generic names")
+
     entities = []
     eq_entity_map: dict[tuple[int, str], DCM1ZoneEQ] = {}
 
@@ -173,8 +179,11 @@ class DCM1ZoneEQ(NumberEntity):
         if self._entity_name_suffix:
             display_name = f"{display_name} {self._entity_name_suffix}"
         
+        # Use same identifier format as MixerZone to ensure entities group under same device
+        unique_base = f"dcm1_{self._mixer._hostname.replace('.', '_')}"
+        
         return DeviceInfo(
-            identifiers={(DOMAIN, f"{self._config_entry_id}_zone_{self.zone_id}")},
+            identifiers={(DOMAIN, f"{unique_base}_zone{self.zone_id}")},
             name=display_name,
             manufacturer="Cloud Electronics",
             model="DCM1 Zone",
