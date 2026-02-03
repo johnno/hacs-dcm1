@@ -284,7 +284,7 @@ class MixerZone(MediaPlayerEntity):
             identifiers={(DOMAIN, self._attr_unique_id)},
             name=display_name,
             manufacturer="Cloud Electronics",
-            model="DCM1 Zone Mixer",
+            model="DCM1 Zone Mixer Zone",
         )
 
     def set_state(self, state):
