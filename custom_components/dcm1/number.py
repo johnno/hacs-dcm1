@@ -118,6 +118,15 @@ class DCM1ZoneEQ(NumberEntity):
     _attr_native_step = 2  # EQ only supports even values (-14, -12, -10, ... 0, +2, +4, ... +14)
     _attr_native_unit_of_measurement = "dB"
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes for debugging."""
+        return {
+            "zone_id": self.zone_id,
+            "parameter": self.parameter,
+            "zone_name": self.zone_name,
+        }
+
     def __init__(
         self,
         zone_id: int,
