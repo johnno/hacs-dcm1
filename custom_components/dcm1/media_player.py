@@ -17,6 +17,7 @@ from homeassistant.components.media_player import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -266,22 +267,25 @@ class MixerZone(MediaPlayerEntity):
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
         unique_base = f"dcm1_{self._mixer._hostname.replace('.', '_')}"
         self._attr_unique_id = f"{unique_base}_zone{zone_id}"
+        self._zone_name = zone_name
 
-        # Build display name based on configuration
-        if use_zone_labels:
-            display_name = zone_name
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info - computed dynamically so it stays current as zone name updates."""
+        if self._use_zone_labels:
+            display_name = self._zone_name
         else:
-            display_name = f"Zone {zone_id}"
+            display_name = f"Zone {self.zone_id}"
         
-        if entity_name_suffix:
-            display_name = f"{display_name} {entity_name_suffix}"
+        if self._entity_name_suffix:
+            display_name = f"{display_name} {self._entity_name_suffix}"
 
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, self._attr_unique_id)},
-            "name": display_name,
-            "manufacturer": "Cloud Electronics",
-            "model": "DCM1 Zone Mixer",
-        }
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._attr_unique_id)},
+            name=display_name,
+            manufacturer="Cloud Electronics",
+            model="DCM1 Zone Mixer",
+        )
 
     def set_state(self, state):
         """Set the state."""
@@ -295,16 +299,7 @@ class MixerZone(MediaPlayerEntity):
 
     def set_name(self, name: str):
         """Set the zone name."""
-        if self._attr_device_info:
-            if self._use_zone_labels:
-                display_name = name
-            else:
-                display_name = f"Zone {self.zone_id}"
-            
-            if self._entity_name_suffix:
-                display_name = f"{display_name} {self._entity_name_suffix}"
-            
-            self._attr_device_info["name"] = display_name
+        self._zone_name = name
         self.schedule_update_ha_state()
 
     def set_source(self, source_id):
@@ -604,22 +599,25 @@ class MixerGroup(MediaPlayerEntity):
         # Use hostname as unique identifier since DCM1 doesn't have a MAC
         unique_base = f"dcm1_{self._mixer._hostname.replace('.', '_')}"
         self._attr_unique_id = f"{unique_base}_group{group_id}"
+        self._group_name = group_name
 
-        # Build display name based on configuration
-        if use_zone_labels:
-            display_name = group_name
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info - computed dynamically so it stays current as group name updates."""
+        if self._use_zone_labels:
+            display_name = self._group_name
         else:
-            display_name = f"Group {group_id}"
+            display_name = f"Group {self.group_id}"
         
-        if entity_name_suffix:
-            display_name = f"{display_name} {entity_name_suffix}"
+        if self._entity_name_suffix:
+            display_name = f"{display_name} {self._entity_name_suffix}"
 
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, self._attr_unique_id)},
-            "name": display_name,
-            "manufacturer": "Cloud Electronics",
-            "model": "DCM1 Zone Mixer Group",
-        }
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._attr_unique_id)},
+            name=display_name,
+            manufacturer="Cloud Electronics",
+            model="DCM1 Zone Mixer Group",
+        )
 
     def set_state(self, state):
         """Set the state."""
@@ -633,16 +631,7 @@ class MixerGroup(MediaPlayerEntity):
 
     def set_name(self, name: str):
         """Set the group name."""
-        if self._attr_device_info:
-            if self._use_zone_labels:
-                display_name = name
-            else:
-                display_name = f"Group {self.group_id}"
-            
-            if self._entity_name_suffix:
-                display_name = f"{display_name} {self._entity_name_suffix}"
-            
-            self._attr_device_info["name"] = display_name
+        self._group_name = name
         self.schedule_update_ha_state()
     
     def set_source(self, source_id):
