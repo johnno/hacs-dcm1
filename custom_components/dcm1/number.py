@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -35,7 +36,14 @@ async def async_setup_entry(
     # Get zone entities from media_player platform so we can register EQ entities with their parent zones
     zone_entities = hass.data[DOMAIN].get("zone_entities", {}).get(config_entry.entry_id, {})
     if not zone_entities:
-        _LOGGER.error("Zone entities not found - media_player platform must be loaded first")
+        # media_player may still be setting up; wait briefly for it to populate
+        for _ in range(20):  # up to ~5 seconds
+            await asyncio.sleep(0.25)
+            zone_entities = hass.data[DOMAIN].get("zone_entities", {}).get(config_entry.entry_id, {})
+            if zone_entities:
+                break
+    if not zone_entities:
+        _LOGGER.warning("Zone entities not found - media_player platform not ready")
         return
 
     entities = []
