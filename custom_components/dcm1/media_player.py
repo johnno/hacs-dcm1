@@ -261,7 +261,9 @@ class MixerZone(MediaPlayerEntity):
         self._pre_mute_raw_volume = None  # Raw device level before muting (0-62)
         
         # EQ number entities owned by this zone (registered by number platform)
-        self._eq_entities: dict[str, any] = {}  # parameter -> DCM1ZoneEQ entity
+        self._eq_treble_entity = None
+        self._eq_mid_entity = None
+        self._eq_bass_entity = None
         
         # Try to get initial source state
         initial_source_id = mixer.get_zone_source(zone_id)
@@ -376,16 +378,21 @@ class MixerZone(MediaPlayerEntity):
 
     def register_eq_entity(self, parameter: str, entity) -> None:
         """Register an EQ number entity owned by this zone."""
-        self._eq_entities[parameter] = entity
+        if parameter == "treble":
+            self._eq_treble_entity = entity
+        elif parameter == "mid":
+            self._eq_mid_entity = entity
+        elif parameter == "bass":
+            self._eq_bass_entity = entity
 
     def update_eq_values(self, treble: int = None, mid: int = None, bass: int = None) -> None:
         """Update EQ values for owned number entities."""
-        if treble is not None and "treble" in self._eq_entities:
-            self._eq_entities["treble"].update_value(treble)
-        if mid is not None and "mid" in self._eq_entities:
-            self._eq_entities["mid"].update_value(mid)
-        if bass is not None and "bass" in self._eq_entities:
-            self._eq_entities["bass"].update_value(bass)
+        if treble is not None and self._eq_treble_entity:
+            self._eq_treble_entity.update_value(treble)
+        if mid is not None and self._eq_mid_entity:
+            self._eq_mid_entity.update_value(mid)
+        if bass is not None and self._eq_bass_entity:
+            self._eq_bass_entity.update_value(bass)
 
     def maybe_update_volume_level_from_device(self, level):
         """Maybe update volume state from device response (may reject stale responses).
