@@ -4,9 +4,6 @@ Home Assistant integration for the Cloud DCM1 Zone Mixer - Control 8 zones with 
 
 This custom integration provides support for Cloud DCM1 Zone Mixer devices including source switching, volume control, zone/source labels, and line input filtering.
 
-Support for changing EQ is not yet present.
-
-
 ![DCM1 Example](docs/images/PubExample.png)
 
 ## Hardware Requirements
