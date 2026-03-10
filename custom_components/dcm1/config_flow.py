@@ -18,8 +18,13 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_ENTITY_NAME_SUFFIX,
     CONF_OPTIMISTIC_VOLUME,
+    CONF_PAGING_POST_DELAY_MS,
+    CONF_PAGING_PRE_DELAY_MS,
+    CONF_PAGING_USB_DEVICE,
     CONF_USE_ZONE_LABELS,
     CONF_VOLUME_DB_RANGE,
+    DEFAULT_PAGING_POST_DELAY_MS,
+    DEFAULT_PAGING_PRE_DELAY_MS,
     DEFAULT_PORT,
     DEFAULT_VOLUME_DB_RANGE,
     DOMAIN,
@@ -43,6 +48,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
                 mode="slider",
             )
         ),
+        vol.Optional(CONF_PAGING_PRE_DELAY_MS, default=DEFAULT_PAGING_PRE_DELAY_MS): int,
+        vol.Optional(CONF_PAGING_POST_DELAY_MS, default=DEFAULT_PAGING_POST_DELAY_MS): int,
+        vol.Optional(CONF_PAGING_USB_DEVICE): str,
     }
 )
 
@@ -134,10 +142,35 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
                             mode="slider",
                         )
                     ),
+                    vol.Optional(
+                        CONF_PAGING_PRE_DELAY_MS,
+                        default=config_entry.data.get(
+                            CONF_PAGING_PRE_DELAY_MS, DEFAULT_PAGING_PRE_DELAY_MS
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=5000, unit_of_measurement="ms", mode="box"
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_PAGING_POST_DELAY_MS,
+                        default=config_entry.data.get(
+                            CONF_PAGING_POST_DELAY_MS, DEFAULT_PAGING_POST_DELAY_MS
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=5000, unit_of_measurement="ms", mode="box"
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_PAGING_USB_DEVICE,
+                        default=config_entry.data.get(CONF_PAGING_USB_DEVICE, ""),
+                    ): selector.TextSelector(),
                 }
             ),
             description_placeholders={
-                "volume_db_range_hint": "Attenuation range for volume slider. Higher values = more range (e.g., 40 dB means 0% = -40dB, 50% = -20dB, 100% = 0dB)"
+                "volume_db_range_hint": "Attenuation range for volume slider. Higher values = more range (e.g., 40 dB means 0% = -40dB, 50% = -20dB, 100% = 0dB)",
+                "paging_usb_device_hint": "ALSA device name (e.g., 'hw:1,0') or CoreAudio device name. Leave empty for system default.",
             },
         )
 

@@ -30,7 +30,13 @@ from homeassistant.components.media_source import (
 from .const import (
     CONF_ENTITY_NAME_SUFFIX,
     CONF_OPTIMISTIC_VOLUME,
+    CONF_PAGING_POST_DELAY_MS,
+    CONF_PAGING_PRE_DELAY_MS,
+    CONF_PAGING_USB_DEVICE,
     CONF_USE_ZONE_LABELS,
+    CONF_VOLUME_DB_RANGE,
+    DEFAULT_PAGING_POST_DELAY_MS,
+    DEFAULT_PAGING_PRE_DELAY_MS,
     DOMAIN,
 )
 
@@ -130,10 +136,10 @@ async def async_setup_entry(
     use_zone_labels = config_entry.data.get(CONF_USE_ZONE_LABELS, True)
     entity_name_suffix = config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, "")
     use_optimistic_volume = config_entry.data.get(CONF_OPTIMISTIC_VOLUME, True)
-    volume_db_range = config_entry.data.get("volume_db_range", 40)  # dB range for slider (40 = practical, 61 = full)
-    paging_pre_delay_ms = config_entry.data.get("paging_pre_delay_ms", _PAGING_PRE_DELAY_MS_DEFAULT)
-    paging_post_delay_ms = config_entry.data.get("paging_post_delay_ms", _PAGING_POST_DELAY_MS_DEFAULT)
-    paging_usb_device = config_entry.data.get("paging_usb_device", None)
+    volume_db_range = config_entry.data.get(CONF_VOLUME_DB_RANGE, 40)  # dB range for slider (40 = practical, 61 = full)
+    paging_pre_delay_ms = config_entry.data.get(CONF_PAGING_PRE_DELAY_MS, DEFAULT_PAGING_PRE_DELAY_MS)
+    paging_post_delay_ms = config_entry.data.get(CONF_PAGING_POST_DELAY_MS, DEFAULT_PAGING_POST_DELAY_MS)
+    paging_usb_device = config_entry.data.get(CONF_PAGING_USB_DEVICE, None)
     
     # Query all mixer state (zones, sources, groups, line inputs, volume, status)
     #_LOGGER.info("Querying all mixer state from device")
