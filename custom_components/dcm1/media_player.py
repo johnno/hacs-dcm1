@@ -84,14 +84,20 @@ async def _play_paging_audio(
     # 3. Fallback to ffmpeg (most common in HA OS / Core via 'ffmpeg:' integration)
     ffmpeg_path = shutil.which("ffmpeg") or shutil.which("/opt/homebrew/bin/ffmpeg") or shutil.which("/usr/bin/ffmpeg")
     if ffmpeg_path:
-        # We must specify the output format based on the platform
-        # default to alsa for HA OS/Linux, coreaudio for macOS
+        # We must specify the output format based on the platform.
+        # Darwin = CoreAudio, Linux/HAOS = PulseAudio (default) or ALSA (explicit hw:).
         import platform
         cmd = [ffmpeg_path, "-i", media_id, "-loglevel", "error"]
         if platform.system() == "Darwin":
             cmd += ["-f", "coreaudio", usb_device or "default"]
         else:
-            cmd += ["-f", "alsa", usb_device or "default"]
+            # For Linux/HAOS: 
+            # If user specifies 'hw:X,Y', they want direct ALSA hardware access.
+            if usb_device and usb_device.startswith("hw:"):
+                cmd += ["-f", "alsa", usb_device]
+            else:
+                # Default to PulseAudio (the 'Proper Way' for HAOS and its audio bridge).
+                cmd += ["-f", "pulse", usb_device or "default"]
         return await _run_audio_cmd(cmd, logger)
 
     logger.error(
