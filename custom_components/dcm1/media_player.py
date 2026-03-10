@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import asyncio.subprocess
 import logging
 import shutil
 
@@ -105,6 +106,46 @@ async def _play_paging_audio(
         "Please ensure 'ffmpeg:' is enabled in your HA configuration "
         "or install ffmpeg on your host system."
     )
+
+
+async def _get_media_duration(media_id: str, logger) -> float | None:
+    """Probe media duration using ffprobe."""
+    ffprobe_path = (
+        shutil.which("ffprobe")
+        or shutil.which("/opt/homebrew/bin/ffprobe")
+        or shutil.which("/usr/bin/ffprobe")
+    )
+    if not ffprobe_path:
+        logger.debug("ffprobe not found, cannot probe duration")
+        return None
+
+    cmd = [
+        ffprobe_path,
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        media_id,
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0 and stdout:
+            duration_str = stdout.decode().strip()
+            try:
+                return float(duration_str)
+            except ValueError:
+                logger.warning("Invalid duration from ffprobe: %s", duration_str)
+        elif stderr:
+            logger.debug("ffprobe error: %s", stderr.decode().strip())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to probe duration with ffprobe: %s", exc)
+
+    return None
 
 
 async def _run_audio_cmd(cmd: list[str], logger) -> None:
@@ -631,11 +672,14 @@ class MixerZone(MediaPlayerEntity):
         """Trigger paging sequence for this zone.
 
         Sequence:
-          1. Open paging on this zone via '<PM,PA{zone_id}/>'
-          2. Wait paging_pre_delay_ms for the paging input to stabilise
-          3. Play the audio file/URL through the USB DI sound device
-          4. Wait paging_post_delay_ms for audio tail
-          5. Close all paging via '<PM,PR/>'
+          1. Resolve media-source:// URIs (e.g. TTS) to real URLs
+          2. Probe media duration using ffprobe
+          3. Open paging on this zone via '<PM,PAXXXXXXXX/>'
+          4. Wait paging_pre_delay_ms for the paging input to stabilise
+          5. Play the audio file/URL through the USB DI sound device
+          6. Ensure paging stays open for at least the probed duration
+          7. Wait paging_post_delay_ms for audio tail
+          8. Close all paging via '<PM,PR/>'
 
         Args:
             media_type: Ignored (any value accepted).
@@ -658,9 +702,27 @@ class MixerZone(MediaPlayerEntity):
             media_id = f"{base_url}{media_id}"
             _LOGGER.debug("Normalized relative URL to: %s", media_id)
 
+        # Probe duration before starting paging
+        duration = await _get_media_duration(media_id, _LOGGER)
+        if duration:
+            _LOGGER.debug("Probed media duration: %s seconds", duration)
+
         self._mixer.start_zone_paging(self.zone_id)
         await asyncio.sleep(self._paging_pre_delay_ms / 1000)
+
+        # Start timing the playback
+        start_playback_time = self.hass.loop.time()
+        
         await _play_paging_audio(media_id, self._paging_usb_device, _LOGGER)
+        
+        # Safety floor
+        if duration:
+            elapsed = self.hass.loop.time() - start_playback_time
+            remaining = duration - elapsed
+            if remaining > 0:
+                _LOGGER.debug("Playback process ended early, waiting %s remains", remaining)
+                await asyncio.sleep(remaining)
+
         await asyncio.sleep(self._paging_post_delay_ms / 1000)
         self._mixer.stop_all_paging()
         _LOGGER.info("Zone %s: paging sequence complete", self.zone_id)
@@ -990,12 +1052,14 @@ class MixerGroup(MediaPlayerEntity):
         """Trigger paging sequence for all zones in this group.
 
         Sequence:
-          1. Open paging on every member zone via '<PM,PA{zone_id}/>'
-             (the DCM1 has no native group-paging concept; we fan out)
-          2. Wait paging_pre_delay_ms for the paging inputs to stabilise
-          3. Play the audio file/URL through the USB DI sound device
-          4. Wait paging_post_delay_ms for audio tail
-          5. Close all paging via '<PM,PR/>'
+          1. Resolve media-source:// URIs (e.g. TTS) to real URLs
+          2. Probe media duration using ffprobe
+          3. Open paging on the group's zones
+          4. Wait paging_pre_delay_ms for the paging inputs to stabilise
+          5. Play the audio file/URL through the USB DI sound device
+          6. Ensure paging stays open for at least the probed duration
+          7. Wait paging_post_delay_ms for audio tail
+          8. Close all paging via '<PM,PR/>'
 
         Args:
             media_type: Ignored (any value accepted).
@@ -1018,9 +1082,27 @@ class MixerGroup(MediaPlayerEntity):
             media_id = f"{base_url}{media_id}"
             _LOGGER.debug("Normalized relative URL to: %s", media_id)
 
+        # Probe duration before starting paging
+        duration = await _get_media_duration(media_id, _LOGGER)
+        if duration:
+            _LOGGER.debug("Probed media duration: %s seconds", duration)
+
         self._mixer.start_group_paging(self.group_id)
         await asyncio.sleep(self._paging_pre_delay_ms / 1000)
+
+        # Start timing the playback
+        start_playback_time = self.hass.loop.time()
+
         await _play_paging_audio(media_id, self._paging_usb_device, _LOGGER)
+
+        # Safety floor
+        if duration:
+            elapsed = self.hass.loop.time() - start_playback_time
+            remaining = duration - elapsed
+            if remaining > 0:
+                _LOGGER.debug("Playback process ended early, waiting %s remains", remaining)
+                await asyncio.sleep(remaining)
+
         await asyncio.sleep(self._paging_post_delay_ms / 1000)
         self._mixer.stop_all_paging()
         _LOGGER.info("Group %s: paging sequence complete", self.group_id)
