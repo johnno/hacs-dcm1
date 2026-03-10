@@ -20,6 +20,12 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.network import get_url
+
+from homeassistant.components.media_source import (
+    async_resolve_media,
+    is_media_source_id,
+)
 
 from .const import (
     CONF_ENTITY_NAME_SUFFIX,
@@ -626,6 +632,20 @@ class MixerZone(MediaPlayerEntity):
         _LOGGER.info(
             "Zone %s: starting paging sequence for %s", self.zone_id, media_id
         )
+
+        # Resolve media-source:// URIs (e.g. TTS) to real URLs for the subprocess
+        if is_media_source_id(media_id):
+            _LOGGER.debug("Resolving media source: %s", media_id)
+            sourced_media = await async_resolve_media(self.hass, media_id, self.entity_id)
+            media_id = sourced_media.url
+            _LOGGER.debug("Resolved media source to: %s", media_id)
+
+        # If the URL is relative, prepend the HA base URL
+        if media_id.startswith("/"):
+            base_url = get_url(self.hass, allow_internal=True)
+            media_id = f"{base_url}{media_id}"
+            _LOGGER.debug("Normalized relative URL to: %s", media_id)
+
         self._mixer.start_zone_paging(self.zone_id)
         await asyncio.sleep(self._paging_pre_delay_ms / 1000)
         await _play_paging_audio(media_id, self._paging_usb_device, _LOGGER)
@@ -972,6 +992,20 @@ class MixerGroup(MediaPlayerEntity):
         _LOGGER.info(
             "Group %s: starting paging sequence for %s", self.group_id, media_id
         )
+
+        # Resolve media-source:// URIs (e.g. TTS) to real URLs for the subprocess
+        if is_media_source_id(media_id):
+            _LOGGER.debug("Resolving media source: %s", media_id)
+            sourced_media = await async_resolve_media(self.hass, media_id, self.entity_id)
+            media_id = sourced_media.url
+            _LOGGER.debug("Resolved media source to: %s", media_id)
+
+        # If the URL is relative, prepend the HA base URL
+        if media_id.startswith("/"):
+            base_url = get_url(self.hass, allow_internal=True)
+            media_id = f"{base_url}{media_id}"
+            _LOGGER.debug("Normalized relative URL to: %s", media_id)
+
         self._mixer.start_group_paging(self.group_id)
         await asyncio.sleep(self._paging_pre_delay_ms / 1000)
         await _play_paging_audio(media_id, self._paging_usb_device, _LOGGER)
