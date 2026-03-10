@@ -43,31 +43,54 @@ async def _play_paging_audio(
     """Play audio through the USB DI sound device for paging.
 
     Attempts to use ffplay (Linux / HA OS) then afplay (macOS) in order.
-    Both can handle local file paths and HTTP URLs.
+    If those are missing, falls back to ffmpeg directly (which is more
+    common in HA environments).
 
     Args:
         media_id: Local file path or HTTP URL to the audio file.
         usb_device: Optional ALSA/CoreAudio device name. None = system default.
         logger: Logger instance for this call.
     """
-    cmd: list[str]
-    if shutil.which("ffplay"):
-        cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "warning"]
+    # 1. Try ffplay (preferred as it handles audio output gracefully)
+    ffplay_path = shutil.which("ffplay") or shutil.which("/opt/homebrew/bin/ffplay") or shutil.which("/usr/bin/ffplay")
+    if ffplay_path:
+        cmd = [ffplay_path, "-nodisp", "-autoexit", "-loglevel", "warning"]
         if usb_device:
             cmd += ["-device", usb_device]
         cmd.append(media_id)
-    elif shutil.which("afplay"):
-        cmd = ["afplay"]
+        return await _run_audio_cmd(cmd, logger)
+
+    # 2. Try afplay (macOS specific)
+    afplay_path = shutil.which("afplay") or shutil.which("/usr/bin/afplay")
+    if afplay_path:
+        cmd = [afplay_path]
         if usb_device:
             cmd += ["-d", usb_device]
         cmd.append(media_id)
-    else:
-        logger.error(
-            "No suitable audio player found (tried ffplay, afplay). "
-            "Install ffmpeg to enable paging audio."
-        )
-        return
+        return await _run_audio_cmd(cmd, logger)
 
+    # 3. Fallback to ffmpeg (most common in HA OS / Core via 'ffmpeg:' integration)
+    ffmpeg_path = shutil.which("ffmpeg") or shutil.which("/opt/homebrew/bin/ffmpeg") or shutil.which("/usr/bin/ffmpeg")
+    if ffmpeg_path:
+        # We must specify the output format based on the platform
+        # default to alsa for HA OS/Linux, coreaudio for macOS
+        import platform
+        cmd = [ffmpeg_path, "-i", media_id, "-loglevel", "error"]
+        if platform.system() == "Darwin":
+            cmd += ["-f", "coreaudio", usb_device or "default"]
+        else:
+            cmd += ["-f", "alsa", usb_device or "default"]
+        return await _run_audio_cmd(cmd, logger)
+
+    logger.error(
+        "No suitable audio player found (tried ffplay, afplay, ffmpeg). "
+        "Please ensure 'ffmpeg:' is enabled in your HA configuration "
+        "or install ffmpeg on your host system."
+    )
+
+
+async def _run_audio_cmd(cmd: list[str], logger) -> None:
+    """Helper to execute the process and log errors."""
     logger.info("Paging audio: running %s", " ".join(cmd))
     try:
         proc = await asyncio.create_subprocess_exec(
