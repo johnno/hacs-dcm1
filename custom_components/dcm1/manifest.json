@@ -1,7 +1,9 @@
 {
   "domain": "dcm1",
   "name": "Cloud DCM1 Zone Mixer",
-  "codeowners": ["@johnno"],
+  "codeowners": [
+    "@johnno"
+  ],
   "config_flow": true,
   "reconfigure": true,
   "dependencies": [],
@@ -13,6 +15,6 @@
     "pydcm1 @ git+https://github.com/johnno/pydcm1.git@v0.4.0-beta.1"
   ],
   "ssdp": [],
-  "version": "0.4.0-beta.1",
+  "version": "0.4.0-beta.2",
   "zeroconf": []
 }
