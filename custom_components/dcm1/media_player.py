@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
+import hashlib
 import logging
+import os
 import shutil
 
 from pydcm1.listener import MixerResponseListener
@@ -19,6 +21,7 @@ from homeassistant.components.media_player import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.network import get_url
@@ -108,44 +111,77 @@ async def _play_paging_audio(
     )
 
 
-async def _get_media_duration(media_id: str, logger) -> float | None:
-    """Probe media duration using ffprobe."""
+async def _get_media_duration(hass: HomeAssistant, media_id: str, logger) -> tuple[float | None, str]:
+    """Probe media duration, downloading to a temp file if it's a remote URL.
+    
+    Returns:
+        tuple (duration_in_seconds, final_media_path)
+    """
+    final_media_path = media_id
+    
+    # Check if we need to download the remote URL
+    if media_id.startswith(("http://", "https://")):
+        try:
+            # Create a deterministic filename in /tmp based on the URL hash
+            url_hash = hashlib.md5(media_id.encode()).hexdigest()
+            temp_path = f"/tmp/dcm1_paging_{url_hash}.mp3"
+            
+            # Download the file if it doesn't exist or we want to be fresh
+            # (Using a fresh download each time is safer for TTS which might change)
+            logger.debug("Downloading remote paging audio: %s", media_id)
+            session = async_get_clientsession(hass)
+            async with session.get(media_id, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.read()
+                    # Write to file using executor to avoid blocking the event loop
+                    def write_file():
+                        with open(temp_path, "wb") as f:
+                            f.write(data)
+                    await hass.async_add_executor_job(write_file)
+                    final_media_path = temp_path
+                else:
+                    logger.warning("Failed to download paging audio, status: %s", response.status)
+        except Exception as exc: # noqa: BLE001
+            logger.warning("Error downloading paging audio: %s", exc)
+
+    # Now probe the final_media_path (either original local path or new temp path)
     ffprobe_path = (
         shutil.which("ffprobe")
         or shutil.which("/opt/homebrew/bin/ffprobe")
         or shutil.which("/usr/bin/ffprobe")
     )
-    if not ffprobe_path:
+    
+    duration = None
+    if ffprobe_path:
+        cmd = [
+            ffprobe_path,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            final_media_path,
+        ]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0 and stdout:
+                duration_str = stdout.decode().strip()
+                try:
+                    duration = float(duration_str)
+                except ValueError:
+                    logger.warning("Invalid duration from ffprobe: %s", duration_str)
+            elif stderr:
+                logger.debug("ffprobe error: %s", stderr.decode().strip())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to probe duration with ffprobe: %s", exc)
+    else:
         logger.debug("ffprobe not found, cannot probe duration")
-        return None
 
-    cmd = [
-        ffprobe_path,
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        media_id,
-    ]
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode == 0 and stdout:
-            duration_str = stdout.decode().strip()
-            try:
-                return float(duration_str)
-            except ValueError:
-                logger.warning("Invalid duration from ffprobe: %s", duration_str)
-        elif stderr:
-            logger.debug("ffprobe error: %s", stderr.decode().strip())
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Failed to probe duration with ffprobe: %s", exc)
-
-    return None
+    return duration, final_media_path
 
 
 async def _run_audio_cmd(cmd: list[str], logger) -> None:
@@ -702,29 +738,40 @@ class MixerZone(MediaPlayerEntity):
             media_id = f"{base_url}{media_id}"
             _LOGGER.debug("Normalized relative URL to: %s", media_id)
 
-        # Probe duration before starting paging
-        duration = await _get_media_duration(media_id, _LOGGER)
+        # Probe duration and download if necessary before starting paging
+        duration, local_path = await _get_media_duration(self.hass, media_id, _LOGGER)
         if duration:
             _LOGGER.debug("Probed media duration: %s seconds", duration)
-
-        self._mixer.start_zone_paging(self.zone_id)
-        await asyncio.sleep(self._paging_pre_delay_ms / 1000)
-
-        # Start timing the playback
-        start_playback_time = self.hass.loop.time()
         
-        await _play_paging_audio(media_id, self._paging_usb_device, _LOGGER)
-        
-        # Safety floor
-        if duration:
-            elapsed = self.hass.loop.time() - start_playback_time
-            remaining = duration - elapsed
-            if remaining > 0:
-                _LOGGER.debug("Playback process ended early, waiting %s remains", remaining)
-                await asyncio.sleep(remaining)
+        try:
+            self._mixer.start_zone_paging(self.zone_id)
+            await asyncio.sleep(self._paging_pre_delay_ms / 1000)
 
-        await asyncio.sleep(self._paging_post_delay_ms / 1000)
-        self._mixer.stop_all_paging()
+            # Start timing the playback
+            start_playback_time = self.hass.loop.time()
+            
+            # Use the local path (potentially the downloaded temp file) for playback
+            await _play_paging_audio(local_path, self._paging_usb_device, _LOGGER)
+            
+            # Safety floor
+            if duration:
+                elapsed = self.hass.loop.time() - start_playback_time
+                remaining = duration - elapsed
+                if remaining > 0:
+                    _LOGGER.debug("Playback process ended early, waiting %s remains", remaining)
+                    await asyncio.sleep(remaining)
+
+            await asyncio.sleep(self._paging_post_delay_ms / 1000)
+        finally:
+            self._mixer.stop_all_paging()
+            # Cleanup temp file if we created one
+            if local_path != media_id and os.path.exists(local_path):
+                _LOGGER.debug("Cleaning up temp paging file: %s", local_path)
+                try:
+                    await self.hass.async_add_executor_job(os.remove, local_path)
+                except Exception as exc: # noqa: BLE001
+                    _LOGGER.warning("Failed to remove temp file %s: %s", local_path, exc)
+
         _LOGGER.info("Zone %s: paging sequence complete", self.zone_id)
 
 class MixerGroup(MediaPlayerEntity):
@@ -1082,27 +1129,38 @@ class MixerGroup(MediaPlayerEntity):
             media_id = f"{base_url}{media_id}"
             _LOGGER.debug("Normalized relative URL to: %s", media_id)
 
-        # Probe duration before starting paging
-        duration = await _get_media_duration(media_id, _LOGGER)
+        # Probe duration and download if necessary
+        duration, local_path = await _get_media_duration(self.hass, media_id, _LOGGER)
         if duration:
             _LOGGER.debug("Probed media duration: %s seconds", duration)
 
-        self._mixer.start_group_paging(self.group_id)
-        await asyncio.sleep(self._paging_pre_delay_ms / 1000)
+        try:
+            self._mixer.start_group_paging(self.group_id)
+            await asyncio.sleep(self._paging_pre_delay_ms / 1000)
 
-        # Start timing the playback
-        start_playback_time = self.hass.loop.time()
+            # Start timing the playback
+            start_playback_time = self.hass.loop.time()
 
-        await _play_paging_audio(media_id, self._paging_usb_device, _LOGGER)
+            # Use local path for playback
+            await _play_paging_audio(local_path, self._paging_usb_device, _LOGGER)
 
-        # Safety floor
-        if duration:
-            elapsed = self.hass.loop.time() - start_playback_time
-            remaining = duration - elapsed
-            if remaining > 0:
-                _LOGGER.debug("Playback process ended early, waiting %s remains", remaining)
-                await asyncio.sleep(remaining)
+            # Safety floor
+            if duration:
+                elapsed = self.hass.loop.time() - start_playback_time
+                remaining = duration - elapsed
+                if remaining > 0:
+                    _LOGGER.debug("Playback process ended early, waiting %s remains", remaining)
+                    await asyncio.sleep(remaining)
 
-        await asyncio.sleep(self._paging_post_delay_ms / 1000)
-        self._mixer.stop_all_paging()
+            await asyncio.sleep(self._paging_post_delay_ms / 1000)
+        finally:
+            self._mixer.stop_all_paging()
+            # Cleanup temp file
+            if local_path != media_id and os.path.exists(local_path):
+                _LOGGER.debug("Cleaning up temp paging file: %s", local_path)
+                try:
+                    await self.hass.async_add_executor_job(os.remove, local_path)
+                except Exception as exc: # noqa: BLE001
+                    _LOGGER.warning("Failed to remove temp file %s: %s", local_path, exc)
+
         _LOGGER.info("Group %s: paging sequence complete", self.group_id)
