@@ -36,19 +36,16 @@ from .const import (
     CONF_ENTITY_NAME_SUFFIX,
     CONF_OPTIMISTIC_VOLUME,
     CONF_PAGING_POST_DELAY_MS,
-    CONF_PAGING_PRE_DELAY_MS,
     CONF_PAGING_USB_DEVICE,
     CONF_USE_ZONE_LABELS,
     CONF_VOLUME_DB_RANGE,
     DEFAULT_PAGING_POST_DELAY_MS,
-    DEFAULT_PAGING_PRE_DELAY_MS,
     DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 # Default paging timing (can be overridden via config_entry.data)
-_PAGING_PRE_DELAY_MS_DEFAULT = 500   # ms after paging open, before audio plays
 _PAGING_POST_DELAY_MS_DEFAULT = 200  # ms after audio ends, before paging closes
 
 
@@ -224,7 +221,6 @@ async def async_setup_entry(
     entity_name_suffix = config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, "")
     use_optimistic_volume = config_entry.data.get(CONF_OPTIMISTIC_VOLUME, True)
     volume_db_range = config_entry.data.get(CONF_VOLUME_DB_RANGE, 40)  # dB range for slider (40 = practical, 61 = full)
-    paging_pre_delay_ms = config_entry.data.get(CONF_PAGING_PRE_DELAY_MS, DEFAULT_PAGING_PRE_DELAY_MS)
     paging_post_delay_ms = config_entry.data.get(CONF_PAGING_POST_DELAY_MS, DEFAULT_PAGING_POST_DELAY_MS)
     paging_usb_device = config_entry.data.get(CONF_PAGING_USB_DEVICE, None)
     
@@ -260,7 +256,7 @@ async def async_setup_entry(
         enabled_inputs = mixer.get_zone_enabled_line_inputs(zone_id)
         _LOGGER.info("DEBUG: Zone %s enabled_inputs returned: %s", zone_id, enabled_inputs)
         _LOGGER.info("DEBUG: Zone %s type: %s, bool: %s, len: %s", zone_id, type(enabled_inputs), bool(enabled_inputs), len(enabled_inputs) if enabled_inputs else 0)
-        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_pre_delay_ms, paging_post_delay_ms, paging_usb_device)
+        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_post_delay_ms, paging_usb_device)
         zone_entities[zone.id] = mixer_zone
         entities.append(mixer_zone)
 
@@ -274,7 +270,7 @@ async def async_setup_entry(
             enabled_inputs = mixer.get_group_enabled_line_inputs(group_id)
             _LOGGER.info("DEBUG: Group %s enabled_inputs returned: %s", group_id, enabled_inputs)
             _LOGGER.info("DEBUG: Type of enabled_inputs: %s, bool check: %s", type(enabled_inputs), bool(enabled_inputs))
-            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_pre_delay_ms, paging_post_delay_ms, paging_usb_device)
+            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_post_delay_ms, paging_usb_device)
             group_entities[group.id] = mixer_group
             entities.append(mixer_group)
         else:
@@ -376,6 +372,12 @@ class MixerListener(MixerResponseListener):
         if entity:
             entity.maybe_update_volume_level_from_device(level)
 
+    def paging_status_received(self, mask: str):
+        for entity in self.mixer_zone_entities.values():
+            entity.schedule_update_ha_state()
+        for entity in self.mixer_group_entities.values():
+            entity.schedule_update_ha_state()
+
     def error(self, error_message: str):
         pass  # Not required for us
 
@@ -395,7 +397,7 @@ class MixerZone(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_pre_delay_ms=_PAGING_PRE_DELAY_MS_DEFAULT, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None) -> None:
+    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None) -> None:
         """Init."""
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
@@ -404,7 +406,6 @@ class MixerZone(MediaPlayerEntity):
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
         self._use_optimistic_volume = use_optimistic_volume
         self._volume_db_range = max(1, min(61, volume_db_range))  # Clamp to valid range
-        self._paging_pre_delay_ms: int = paging_pre_delay_ms
         self._paging_post_delay_ms: int = paging_post_delay_ms
         self._paging_usb_device: str | None = paging_usb_device
         
@@ -684,6 +685,10 @@ class MixerZone(MediaPlayerEntity):
             attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
         if self._volume_level is not None:
             attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
+        mask = self._mixer.paging_status
+        attrs["raw_paging_status"] = mask
+        attrs["paging_bus_busy"] = bool(mask and "X" in mask)
+        attrs["paging_open"] = bool(mask and len(mask) >= self.zone_id and mask[self.zone_id - 1] == "X")
         return attrs
 
     def mute_volume(self, mute: bool) -> None:
@@ -714,12 +719,11 @@ class MixerZone(MediaPlayerEntity):
         Sequence:
           1. Resolve media-source:// URIs (e.g. TTS) to real URLs
           2. Probe media duration using ffprobe
-          3. Open paging on this zone via '<PM,PAXXXXXXXX/>'
-          4. Wait paging_pre_delay_ms for the paging input to stabilise
-          5. Play the audio file/URL through the USB DI sound device
-          6. Ensure paging stays open for at least the probed duration
-          7. Wait paging_post_delay_ms for audio tail
-          8. Close all paging via '<PM,PR/>'
+          3. Open paging on this zone via '<PM,PAXXXXXXXX/>' and confirm it is open
+          4. Play the audio file/URL through the USB DI sound device
+          5. Ensure paging stays open for at least the probed duration
+          6. Wait paging_post_delay_ms for audio tail
+          7. Close all paging via '<PM,PR/>'
 
         Args:
             media_type: Ignored (any value accepted).
@@ -753,8 +757,7 @@ class MixerZone(MediaPlayerEntity):
             _LOGGER.debug("Probed media duration: %s seconds", duration)
         
         try:
-            self._mixer.start_zone_paging(self.zone_id)
-            await asyncio.sleep(self._paging_pre_delay_ms / 1000)
+            await self._mixer.start_zone_paging(self.zone_id)
 
             # Start timing the playback
             start_playback_time = self.hass.loop.time()
@@ -772,7 +775,7 @@ class MixerZone(MediaPlayerEntity):
 
             await asyncio.sleep(self._paging_post_delay_ms / 1000)
         finally:
-            self._mixer.stop_all_paging()
+            await self._mixer.stop_all_paging()
             # Cleanup temp file if we created one
             if local_path != media_id and os.path.exists(local_path):
                 _LOGGER.debug("Cleaning up temp paging file: %s", local_path)
@@ -799,7 +802,7 @@ class MixerGroup(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_pre_delay_ms=_PAGING_PRE_DELAY_MS_DEFAULT, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None) -> None:
+    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None) -> None:
         """Init."""
         self.group_id = group_id
         self._mixer: DCM1Mixer = mixer
@@ -808,7 +811,6 @@ class MixerGroup(MediaPlayerEntity):
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
         self._use_optimistic_volume = use_optimistic_volume
         self._volume_db_range = max(1, min(61, volume_db_range))  # Clamp to valid range
-        self._paging_pre_delay_ms: int = paging_pre_delay_ms
         self._paging_post_delay_ms: int = paging_post_delay_ms
         self._paging_usb_device: str | None = paging_usb_device
         
@@ -1082,6 +1084,26 @@ class MixerGroup(MediaPlayerEntity):
             new_volume = max(0.0, self._volume_level - 0.05)  # 5% decrement
             self.set_volume_level(new_volume)
 
+    @property
+    def extra_state_attributes(self):
+        """Return integration-specific debugging attributes."""
+        attrs = {}
+        if self._raw_volume_level is not None:
+            attrs["dcm1_raw_volume_level"] = self._raw_volume_level
+        if self._pending_volume is not None:
+            attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
+        if self._volume_level is not None:
+            attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
+        mask = self._mixer.paging_status
+        attrs["raw_paging_status"] = mask
+        attrs["paging_bus_busy"] = bool(mask and "X" in mask)
+        group = self._mixer.groups_by_id.get(self.group_id)
+        zone_ids = group.zones if group else []
+        attrs["paging_open"] = bool(mask and any(
+            1 <= z <= len(mask) and mask[z - 1] == "X" for z in zone_ids
+        ))
+        return attrs
+
     def mute_volume(self, mute: bool) -> None:
         """Mute or unmute the volume."""
         if mute:
@@ -1110,12 +1132,11 @@ class MixerGroup(MediaPlayerEntity):
         Sequence:
           1. Resolve media-source:// URIs (e.g. TTS) to real URLs
           2. Probe media duration using ffprobe
-          3. Open paging on the group's zones
-          4. Wait paging_pre_delay_ms for the paging inputs to stabilise
-          5. Play the audio file/URL through the USB DI sound device
-          6. Ensure paging stays open for at least the probed duration
-          7. Wait paging_post_delay_ms for audio tail
-          8. Close all paging via '<PM,PR/>'
+          3. Open paging on the group's zones and confirm they are open
+          4. Play the audio file/URL through the USB DI sound device
+          5. Ensure paging stays open for at least the probed duration
+          6. Wait paging_post_delay_ms for audio tail
+          7. Close all paging via '<PM,PR/>'
 
         Args:
             media_type: Ignored (any value accepted).
@@ -1149,8 +1170,7 @@ class MixerGroup(MediaPlayerEntity):
             _LOGGER.debug("Probed media duration: %s seconds", duration)
 
         try:
-            self._mixer.start_group_paging(self.group_id)
-            await asyncio.sleep(self._paging_pre_delay_ms / 1000)
+            await self._mixer.start_group_paging(self.group_id)
 
             # Start timing the playback
             start_playback_time = self.hass.loop.time()
@@ -1168,7 +1188,7 @@ class MixerGroup(MediaPlayerEntity):
 
             await asyncio.sleep(self._paging_post_delay_ms / 1000)
         finally:
-            self._mixer.stop_all_paging()
+            await self._mixer.stop_all_paging()
             # Cleanup temp file
             if local_path != media_id and os.path.exists(local_path):
                 _LOGGER.debug("Cleaning up temp paging file: %s", local_path)

@@ -12,9 +12,9 @@
   "homekit": {},
   "iot_class": "local_push",
   "requirements": [
-    "pydcm1 @ git+https://github.com/johnno/pydcm1.git@v0.4.0-beta.2"
+    "pydcm1 @ git+https://github.com/johnno/pydcm1.git@v0.4.0-beta.3"
   ],
   "ssdp": [],
-  "version": "0.4.0-beta.8",
+  "version": "0.4.0-beta.9",
   "zeroconf": []
 }

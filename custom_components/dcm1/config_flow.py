@@ -19,12 +19,10 @@ from .const import (
     CONF_ENTITY_NAME_SUFFIX,
     CONF_OPTIMISTIC_VOLUME,
     CONF_PAGING_POST_DELAY_MS,
-    CONF_PAGING_PRE_DELAY_MS,
     CONF_PAGING_USB_DEVICE,
     CONF_USE_ZONE_LABELS,
     CONF_VOLUME_DB_RANGE,
     DEFAULT_PAGING_POST_DELAY_MS,
-    DEFAULT_PAGING_PRE_DELAY_MS,
     DEFAULT_PORT,
     DEFAULT_VOLUME_DB_RANGE,
     DOMAIN,
@@ -48,7 +46,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
                 mode="slider",
             )
         ),
-        vol.Optional(CONF_PAGING_PRE_DELAY_MS, default=DEFAULT_PAGING_PRE_DELAY_MS): int,
         vol.Optional(CONF_PAGING_POST_DELAY_MS, default=DEFAULT_PAGING_POST_DELAY_MS): int,
         vol.Optional(CONF_PAGING_USB_DEVICE): str,
     }
@@ -140,16 +137,6 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
                             max=61,
                             unit_of_measurement="dB",
                             mode="slider",
-                        )
-                    ),
-                    vol.Optional(
-                        CONF_PAGING_PRE_DELAY_MS,
-                        default=config_entry.data.get(
-                            CONF_PAGING_PRE_DELAY_MS, DEFAULT_PAGING_PRE_DELAY_MS
-                        ),
-                    ): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=0, max=5000, unit_of_measurement="ms", mode="box"
                         )
                     ),
                     vol.Optional(
