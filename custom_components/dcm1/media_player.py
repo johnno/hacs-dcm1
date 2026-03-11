@@ -53,6 +53,7 @@ async def _play_paging_audio(
     media_id: str,
     usb_device: str | None,
     logger,
+    post_delay_ms: int = 0,
 ) -> None:
     """Play audio through the USB DI sound device for paging.
 
@@ -64,24 +65,33 @@ async def _play_paging_audio(
         media_id: Local file path or HTTP URL to the audio file.
         usb_device: Optional ALSA/CoreAudio device name. None = system default.
         logger: Logger instance for this call.
+        post_delay_ms: Silence to append after the message (ms). Implemented via
+            apad filter for ffmpeg/ffplay, or a plain sleep for afplay.
     """
+    pad_dur = post_delay_ms / 1000.0 if post_delay_ms > 0 else 0.0
+
     # 1. Try ffplay (preferred as it handles audio output gracefully)
     ffplay_path = shutil.which("ffplay") or shutil.which("/opt/homebrew/bin/ffplay") or shutil.which("/usr/bin/ffplay")
     if ffplay_path:
         cmd = [ffplay_path, "-nodisp", "-autoexit", "-loglevel", "warning"]
+        if pad_dur:
+            cmd += ["-af", f"apad=pad_dur={pad_dur:.3f}"]
         if usb_device:
             cmd += ["-device", usb_device]
         cmd.append(media_id)
         return await _run_audio_cmd(cmd, logger)
 
-    # 2. Try afplay (macOS specific)
+    # 2. Try afplay (macOS specific) — no filter support, fall back to a sleep
     afplay_path = shutil.which("afplay") or shutil.which("/usr/bin/afplay")
     if afplay_path:
         cmd = [afplay_path]
         if usb_device:
             cmd += ["-d", usb_device]
         cmd.append(media_id)
-        return await _run_audio_cmd(cmd, logger)
+        result = await _run_audio_cmd(cmd, logger)
+        if pad_dur:
+            await asyncio.sleep(pad_dur)
+        return result
 
     # 3. Fallback to ffmpeg (most common in HA OS / Core via 'ffmpeg:' integration)
     ffmpeg_path = shutil.which("ffmpeg") or shutil.which("/opt/homebrew/bin/ffmpeg") or shutil.which("/usr/bin/ffmpeg")
@@ -90,6 +100,8 @@ async def _play_paging_audio(
         # Darwin = CoreAudio, Linux/HAOS = PulseAudio (default) or ALSA (explicit hw:).
         import platform
         cmd = [ffmpeg_path, "-i", media_id, "-loglevel", "error"]
+        if pad_dur:
+            cmd += ["-af", f"apad=pad_dur={pad_dur:.3f}"]
         if platform.system() == "Darwin":
             cmd += ["-f", "coreaudio", usb_device or "default"]
         else:
@@ -735,9 +747,9 @@ class MixerZone(MediaPlayerEntity):
           2. Probe media duration using ffprobe
           3. Open paging on this zone via '<PM,PAXXXXXXXX/>' and confirm it is open
           4. Play the audio file/URL through the USB DI sound device
+             (post_delay_ms silence appended via apad filter, or a sleep for afplay)
           5. Ensure paging stays open for at least the probed duration
-          6. Wait paging_post_delay_ms for audio tail
-          7. Close all paging via '<PM,PR/>'
+          6. Close all paging via '<PM,PR/>'
 
         Args:
             media_type: Ignored (any value accepted).
@@ -783,7 +795,7 @@ class MixerZone(MediaPlayerEntity):
             start_playback_time = self.hass.loop.time()
             
             # Use the local path (potentially the downloaded temp file) for playback
-            await _play_paging_audio(local_path, self._paging_usb_device, _LOGGER)
+            await _play_paging_audio(local_path, self._paging_usb_device, _LOGGER, post_delay_ms=self._paging_post_delay_ms)
             
             # Safety floor
             if duration:
@@ -792,8 +804,6 @@ class MixerZone(MediaPlayerEntity):
                 if remaining > 0:
                     _LOGGER.debug("Playback process ended early, waiting %s remains", remaining)
                     await asyncio.sleep(remaining)
-
-            await asyncio.sleep(self._paging_post_delay_ms / 1000)
         finally:
             await self._mixer.stop_all_paging()
             if self._paging_bus_entity:
@@ -1157,9 +1167,9 @@ class MixerGroup(MediaPlayerEntity):
           2. Probe media duration using ffprobe
           3. Open paging on the group's zones and confirm they are open
           4. Play the audio file/URL through the USB DI sound device
+             (post_delay_ms silence appended via apad filter, or a sleep for afplay)
           5. Ensure paging stays open for at least the probed duration
-          6. Wait paging_post_delay_ms for audio tail
-          7. Close all paging via '<PM,PR/>'
+          6. Close all paging via '<PM,PR/>'
 
         Args:
             media_type: Ignored (any value accepted).
@@ -1205,7 +1215,7 @@ class MixerGroup(MediaPlayerEntity):
             start_playback_time = self.hass.loop.time()
 
             # Use local path for playback
-            await _play_paging_audio(local_path, self._paging_usb_device, _LOGGER)
+            await _play_paging_audio(local_path, self._paging_usb_device, _LOGGER, post_delay_ms=self._paging_post_delay_ms)
 
             # Safety floor
             if duration:
@@ -1214,8 +1224,6 @@ class MixerGroup(MediaPlayerEntity):
                 if remaining > 0:
                     _LOGGER.debug("Playback process ended early, waiting %s remains", remaining)
                     await asyncio.sleep(remaining)
-
-            await asyncio.sleep(self._paging_post_delay_ms / 1000)
         finally:
             await self._mixer.stop_all_paging()
             if self._paging_bus_entity:
