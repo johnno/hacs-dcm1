@@ -1243,7 +1243,7 @@ class PagingBus(MediaPlayerEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_name = None
-    _attr_supported_features = 0
+    _attr_supported_features = MediaPlayerEntityFeature(0)
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
 
     def __init__(self, mixer: DCM1Mixer) -> None:
