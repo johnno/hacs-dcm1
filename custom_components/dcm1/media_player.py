@@ -685,7 +685,7 @@ class MixerZone(MediaPlayerEntity):
             attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
         if self._volume_level is not None:
             attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
-        mask = self._mixer.paging_status
+        mask = getattr(self._mixer, "paging_status", None)
         attrs["raw_paging_status"] = mask
         attrs["paging_bus_busy"] = bool(mask and "X" in mask)
         attrs["paging_open"] = bool(mask and len(mask) >= self.zone_id and mask[self.zone_id - 1] == "X")
@@ -1094,7 +1094,7 @@ class MixerGroup(MediaPlayerEntity):
             attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
         if self._volume_level is not None:
             attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
-        mask = self._mixer.paging_status
+        mask = getattr(self._mixer, "paging_status", None)
         attrs["raw_paging_status"] = mask
         attrs["paging_bus_busy"] = bool(mask and "X" in mask)
         group = self._mixer.groups_by_id.get(self.group_id)
