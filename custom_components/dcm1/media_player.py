@@ -430,7 +430,7 @@ class MixerZone(MediaPlayerEntity):
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
         self._use_optimistic_volume = use_optimistic_volume
-        self._volume_db_range = max(1, min(61, volume_db_range))  # Clamp to valid range
+        self._volume_db_range = int(max(1, min(61, volume_db_range)))  # Clamp to valid range
         self._paging_post_delay_ms: int = paging_post_delay_ms
         self._paging_usb_device: str | None = paging_usb_device
         self._paging_bus_entity: PagingBus | None = paging_bus_entity
@@ -842,7 +842,7 @@ class MixerGroup(MediaPlayerEntity):
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
         self._use_optimistic_volume = use_optimistic_volume
-        self._volume_db_range = max(1, min(61, volume_db_range))  # Clamp to valid range
+        self._volume_db_range = int(max(1, min(61, volume_db_range)))  # Clamp to valid range
         self._paging_post_delay_ms: int = paging_post_delay_ms
         self._paging_usb_device: str | None = paging_usb_device
         self._paging_bus_entity: PagingBus | None = paging_bus_entity
