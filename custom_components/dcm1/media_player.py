@@ -27,6 +27,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.network import get_url
 
 from homeassistant.components.media_source import (
+    PlayMedia,
     async_resolve_media,
     is_media_source_id,
 )
@@ -111,29 +112,32 @@ async def _play_paging_audio(
     )
 
 
-async def _get_media_duration(hass: HomeAssistant, media_id: str, logger) -> tuple[float | None, str]:
+async def _get_media_duration(hass: HomeAssistant, media_id: str, logger, local_path: str | None = None) -> tuple[float | None, str]:
     """Probe media duration, downloading to a temp file if it's a remote URL.
     
     Returns:
         tuple (duration_in_seconds, final_media_path)
     """
-    final_media_path = media_id
+    if local_path:
+        # If the media source already gave us a local path, use it directly
+        final_media_path = local_path
+        logger.debug("Using provided local path for duration probe: %s", local_path)
+    else:
+        final_media_path = media_id
     
-    # Check if we need to download the remote URL
-    if media_id.startswith(("http://", "https://")):
+    # Check if we need to download the remote URL (only if we don't already have a local path)
+    if not local_path and media_id.startswith(("http://", "https://")):
         try:
             # Create a deterministic filename in /tmp based on the URL hash
             url_hash = hashlib.md5(media_id.encode()).hexdigest()
             temp_path = f"/tmp/dcm1_paging_{url_hash}.mp3"
             
-            # Download the file if it doesn't exist or we want to be fresh
-            # (Using a fresh download each time is safer for TTS which might change)
+            # Download the file
             logger.debug("Downloading remote paging audio: %s", media_id)
             session = async_get_clientsession(hass)
             async with session.get(media_id, timeout=10) as response:
                 if response.status == 200:
                     data = await response.read()
-                    # Write to file using executor to avoid blocking the event loop
                     def write_file():
                         with open(temp_path, "wb") as f:
                             f.write(data)
@@ -725,12 +729,17 @@ class MixerZone(MediaPlayerEntity):
             "Zone %s: starting paging sequence for %s", self.zone_id, media_id
         )
 
-        # Resolve media-source:// URIs (e.g. TTS) to real URLs for the subprocess
+        # Resolve media-source:// URIs (e.g. TTS) to real URLs
+        local_path_hint = None
         if is_media_source_id(media_id):
             _LOGGER.debug("Resolving media source: %s", media_id)
             sourced_media = await async_resolve_media(self.hass, media_id, self.entity_id)
             media_id = sourced_media.url
-            _LOGGER.debug("Resolved media source to: %s", media_id)
+            # Some sources (like local media) provide a direct file path
+            local_path_hint = getattr(sourced_media, "path", None)
+            if local_path_hint:
+                local_path_hint = str(local_path_hint)
+            _LOGGER.debug("Resolved media source to: %s (path hint: %s)", media_id, local_path_hint)
 
         # If the URL is relative, prepend the HA base URL
         if media_id.startswith("/"):
@@ -739,7 +748,7 @@ class MixerZone(MediaPlayerEntity):
             _LOGGER.debug("Normalized relative URL to: %s", media_id)
 
         # Probe duration and download if necessary before starting paging
-        duration, local_path = await _get_media_duration(self.hass, media_id, _LOGGER)
+        duration, local_path = await _get_media_duration(self.hass, media_id, _LOGGER, local_path=local_path_hint)
         if duration:
             _LOGGER.debug("Probed media duration: %s seconds", duration)
         
@@ -1116,12 +1125,17 @@ class MixerGroup(MediaPlayerEntity):
             "Group %s: starting paging sequence for %s", self.group_id, media_id
         )
 
-        # Resolve media-source:// URIs (e.g. TTS) to real URLs for the subprocess
+        # Resolve media-source:// URIs (e.g. TTS) to real URLs
+        local_path_hint = None
         if is_media_source_id(media_id):
             _LOGGER.debug("Resolving media source: %s", media_id)
             sourced_media = await async_resolve_media(self.hass, media_id, self.entity_id)
             media_id = sourced_media.url
-            _LOGGER.debug("Resolved media source to: %s", media_id)
+            # Some sources provide a direct file path
+            local_path_hint = getattr(sourced_media, "path", None)
+            if local_path_hint:
+                local_path_hint = str(local_path_hint)
+            _LOGGER.debug("Resolved media source to: %s (path hint: %s)", media_id, local_path_hint)
 
         # If the URL is relative, prepend the HA base URL
         if media_id.startswith("/"):
@@ -1130,7 +1144,7 @@ class MixerGroup(MediaPlayerEntity):
             _LOGGER.debug("Normalized relative URL to: %s", media_id)
 
         # Probe duration and download if necessary
-        duration, local_path = await _get_media_duration(self.hass, media_id, _LOGGER)
+        duration, local_path = await _get_media_duration(self.hass, media_id, _LOGGER, local_path=local_path_hint)
         if duration:
             _LOGGER.debug("Probed media duration: %s seconds", duration)
 
