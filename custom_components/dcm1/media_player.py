@@ -732,6 +732,7 @@ class MixerZone(MediaPlayerEntity):
         _LOGGER.info(
             "Zone %s: starting paging sequence for %s", self.zone_id, media_id
         )
+        paging_start_time = self.hass.loop.time()
 
         # Resolve media-source:// URIs (e.g. TTS) to real URLs
         local_path_hint = None
@@ -754,7 +755,7 @@ class MixerZone(MediaPlayerEntity):
         # Probe duration and download if necessary before starting paging
         duration, local_path = await _get_media_duration(self.hass, media_id, _LOGGER, local_path=local_path_hint)
         if duration:
-            _LOGGER.debug("Probed media duration: %s seconds", duration)
+            _LOGGER.info("Zone %s: media duration %.1fs", self.zone_id, duration)
         
         try:
             await self._mixer.start_zone_paging(self.zone_id)
@@ -784,7 +785,7 @@ class MixerZone(MediaPlayerEntity):
                 except Exception as exc: # noqa: BLE001
                     _LOGGER.warning("Failed to remove temp file %s: %s", local_path, exc)
 
-        _LOGGER.info("Zone %s: paging sequence complete", self.zone_id)
+        _LOGGER.info("Zone %s: paging sequence complete in %.1fs", self.zone_id, self.hass.loop.time() - paging_start_time)
 
 class MixerGroup(MediaPlayerEntity):
     """Represents an enabled Group of the DCM1 Mixer."""
@@ -1145,6 +1146,7 @@ class MixerGroup(MediaPlayerEntity):
         _LOGGER.info(
             "Group %s: starting paging sequence for %s", self.group_id, media_id
         )
+        paging_start_time = self.hass.loop.time()
 
         # Resolve media-source:// URIs (e.g. TTS) to real URLs
         local_path_hint = None
@@ -1167,7 +1169,7 @@ class MixerGroup(MediaPlayerEntity):
         # Probe duration and download if necessary
         duration, local_path = await _get_media_duration(self.hass, media_id, _LOGGER, local_path=local_path_hint)
         if duration:
-            _LOGGER.debug("Probed media duration: %s seconds", duration)
+            _LOGGER.info("Group %s: media duration %.1fs", self.group_id, duration)
 
         try:
             await self._mixer.start_group_paging(self.group_id)
@@ -1197,4 +1199,4 @@ class MixerGroup(MediaPlayerEntity):
                 except Exception as exc: # noqa: BLE001
                     _LOGGER.warning("Failed to remove temp file %s: %s", local_path, exc)
 
-        _LOGGER.info("Group %s: paging sequence complete", self.group_id)
+        _LOGGER.info("Group %s: paging sequence complete in %.1fs", self.group_id, self.hass.loop.time() - paging_start_time)
