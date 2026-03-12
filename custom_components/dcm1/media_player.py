@@ -1124,7 +1124,10 @@ class PagingBus(MediaPlayerEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_name = None
-    _attr_supported_features = MediaPlayerEntityFeature.PLAY_MEDIA
+    _attr_supported_features = (
+        MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.SELECT_SOURCE
+    )
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
 
     def __init__(
@@ -1193,6 +1196,26 @@ class PagingBus(MediaPlayerEntity):
                 name = zone.name if (zone and self._use_zone_labels and zone.name) else f"Zone {zone_id}"
                 names.append(name)
         return ", ".join(names) if names else "(none)"
+
+    @property
+    def source_list(self) -> list[str]:
+        """Return the current destination as the sole list item."""
+        current = self.source
+        return [current] if current else []
+
+    def select_source(self, source: str) -> None:
+        """Zone selection is managed via Page Ready switches; this is intentionally a no-op."""
+
+    @property
+    def extra_state_attributes(self):
+        """Return paging bus status attributes."""
+        mask = getattr(self._mixer, "paging_status", None)
+        busy = bool(mask and "X" in mask)
+        return {
+            "raw_paging_status": mask,
+            "paging_bus_busy": busy,
+            "paging_open": busy,
+        }
 
     # --- Public methods ---
 
