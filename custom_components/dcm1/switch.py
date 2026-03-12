@@ -38,7 +38,7 @@ async def async_setup_entry(
     for zone_id, zone in mixer.zones_by_id.items():
         # Seed default if media_player hasn't set it yet (or if we ran first)
         if zone_id not in paging_flags:
-            paging_flags[zone_id] = True
+            paging_flags[zone_id] = False
         switches.append(PagingZoneSwitch(
             zone_id=zone_id,
             zone_name=zone.name,
@@ -112,7 +112,7 @@ class PagingZoneSwitch(SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        return self._paging_flags.get(self._zone_id, True)
+        return self._paging_flags.get(self._zone_id, False)
 
     async def async_turn_on(self, **kwargs) -> None:
         self._paging_flags[self._zone_id] = True

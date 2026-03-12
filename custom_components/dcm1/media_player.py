@@ -13,6 +13,7 @@ from pydcm1.listener import MixerResponseListener
 from pydcm1.mixer import DCM1Mixer
 
 from homeassistant.components.media_player import (
+    BrowseMedia,
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
@@ -29,6 +30,7 @@ from homeassistant.helpers.network import get_url
 
 from homeassistant.components.media_source import (
     PlayMedia,
+    async_browse_media as media_source_browse_media,
     async_resolve_media,
     is_media_source_id,
 )
@@ -422,6 +424,7 @@ class MixerZone(MediaPlayerEntity):
         | MediaPlayerEntityFeature.VOLUME_STEP
         | MediaPlayerEntityFeature.VOLUME_MUTE
         | MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.BROWSE_MEDIA
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
@@ -742,6 +745,10 @@ class MixerZone(MediaPlayerEntity):
                 level = self._volume_db_range // 2  # Default to mid-range if slider at 0% or unknown
             self._mixer.set_zone_volume(zone_id=self.zone_id, level=level)
 
+    async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
+        """Implement the media browsing interface."""
+        return await media_source_browse_media(self.hass, media_content_id)
+
     async def async_play_media(self, media_type: str, media_id: str, **kwargs) -> None:
         """Delegate paging to PagingBus using a single-zone mask."""
         if not self._paging_bus_entity:
@@ -765,6 +772,7 @@ class MixerGroup(MediaPlayerEntity):
         | MediaPlayerEntityFeature.VOLUME_STEP
         | MediaPlayerEntityFeature.VOLUME_MUTE
         | MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.BROWSE_MEDIA
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
@@ -1093,6 +1101,10 @@ class MixerGroup(MediaPlayerEntity):
                 level = self._volume_db_range // 2  # Default to mid-range if slider at 0% or unknown
             self._mixer.set_group_volume(group_id=self.group_id, level=level)
 
+    async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
+        """Implement the media browsing interface."""
+        return await media_source_browse_media(self.hass, media_content_id)
+
     async def async_play_media(self, media_type: str, media_id: str, **kwargs) -> None:
         """Delegate paging to PagingBus using a mask derived from this group's zones."""
         if not self._paging_bus_entity:
@@ -1127,6 +1139,7 @@ class PagingBus(MediaPlayerEntity):
     _attr_supported_features = (
         MediaPlayerEntityFeature.PLAY_MEDIA
         | MediaPlayerEntityFeature.SELECT_SOURCE
+        | MediaPlayerEntityFeature.BROWSE_MEDIA
     )
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
 
@@ -1205,6 +1218,10 @@ class PagingBus(MediaPlayerEntity):
 
     def select_source(self, source: str) -> None:
         """Zone selection is managed via Page Ready switches; this is intentionally a no-op."""
+
+    async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
+        """Implement the media browsing interface."""
+        return await media_source_browse_media(self.hass, media_content_id)
 
     @property
     def extra_state_attributes(self):
