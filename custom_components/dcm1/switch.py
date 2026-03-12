@@ -114,12 +114,12 @@ class PagingZoneSwitch(SwitchEntity):
     def is_on(self) -> bool:
         return self._paging_flags.get(self._zone_id, True)
 
-    def turn_on(self, **kwargs) -> None:
+    async def async_turn_on(self, **kwargs) -> None:
         self._paging_flags[self._zone_id] = True
-        self.schedule_update_ha_state()
+        self.async_write_ha_state()
         async_dispatcher_send(self.hass, SIGNAL_PAGING_FLAGS_CHANGED.format(self._entry_id))
 
-    def turn_off(self, **kwargs) -> None:
+    async def async_turn_off(self, **kwargs) -> None:
         self._paging_flags[self._zone_id] = False
-        self.schedule_update_ha_state()
+        self.async_write_ha_state()
         async_dispatcher_send(self.hass, SIGNAL_PAGING_FLAGS_CHANGED.format(self._entry_id))
