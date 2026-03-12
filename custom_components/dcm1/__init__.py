@@ -16,7 +16,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.MEDIA_PLAYER, Platform.NUMBER]
+PLATFORMS: list[Platform] = [Platform.MEDIA_PLAYER, Platform.NUMBER, Platform.SWITCH]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -30,6 +30,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async with timeout(5.0):
             await mixer.async_connect()
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = mixer
+        # Pre-create the paging flags dict before platforms start so both
+        # switch.py and media_player.py find it ready regardless of setup order.
+        hass.data[DOMAIN][f"{entry.entry_id}_paging_flags"] = {}
 
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
