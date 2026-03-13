@@ -19,6 +19,7 @@ from .const import (
     CONF_ENTITY_NAME_SUFFIX,
     CONF_OPTIMISTIC_VOLUME,
     CONF_PAGING_POST_DELAY_MS,
+    CONF_PAGING_STAGE_BEFORE_PLAY,
     CONF_PAGING_USB_DEVICE,
     CONF_USE_ZONE_LABELS,
     CONF_VOLUME_DB_RANGE,
@@ -48,6 +49,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_PAGING_POST_DELAY_MS, default=DEFAULT_PAGING_POST_DELAY_MS): int,
         vol.Optional(CONF_PAGING_USB_DEVICE): str,
+        vol.Optional(CONF_PAGING_STAGE_BEFORE_PLAY, default=False): bool,
     }
 )
 
@@ -153,6 +155,10 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_PAGING_USB_DEVICE,
                         default=config_entry.data.get(CONF_PAGING_USB_DEVICE, ""),
                     ): selector.TextSelector(),
+                    vol.Optional(
+                        CONF_PAGING_STAGE_BEFORE_PLAY,
+                        default=config_entry.data.get(CONF_PAGING_STAGE_BEFORE_PLAY, False),
+                    ): selector.BooleanSelector(),
                 }
             ),
             description_placeholders={

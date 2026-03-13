@@ -39,6 +39,7 @@ from .const import (
     CONF_ENTITY_NAME_SUFFIX,
     CONF_OPTIMISTIC_VOLUME,
     CONF_PAGING_POST_DELAY_MS,
+    CONF_PAGING_STAGE_BEFORE_PLAY,
     CONF_PAGING_USB_DEVICE,
     CONF_USE_ZONE_LABELS,
     CONF_VOLUME_DB_RANGE,
@@ -239,6 +240,7 @@ async def async_setup_entry(
     volume_db_range = config_entry.data.get(CONF_VOLUME_DB_RANGE, 40)  # dB range for slider (40 = practical, 61 = full)
     paging_post_delay_ms = config_entry.data.get(CONF_PAGING_POST_DELAY_MS, DEFAULT_PAGING_POST_DELAY_MS)
     paging_usb_device = config_entry.data.get(CONF_PAGING_USB_DEVICE, None)
+    paging_stage_before_play = config_entry.data.get(CONF_PAGING_STAGE_BEFORE_PLAY, False)
     
     # Query all mixer state (zones, sources, groups, line inputs, volume, status)
     #_LOGGER.info("Querying all mixer state from device")
@@ -267,7 +269,7 @@ async def async_setup_entry(
 
     # Create the paging bus entity first so it can be passed to zones/groups.
     paging_flags: dict[int, bool] = hass.data[DOMAIN][f"{config_entry.entry_id}_paging_flags"]
-    paging_bus = PagingBus(mixer, paging_flags, config_entry.entry_id, use_zone_labels, paging_post_delay_ms, paging_usb_device)
+    paging_bus = PagingBus(mixer, paging_flags, config_entry.entry_id, use_zone_labels, paging_post_delay_ms, paging_usb_device, paging_stage_before_play)
 
     # Setup the individual zone entities
     for zone_id, zone in mixer.zones_by_id.items():
@@ -1136,11 +1138,6 @@ class PagingBus(MediaPlayerEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_name = None
-    _attr_supported_features = (
-        MediaPlayerEntityFeature.PLAY_MEDIA
-        | MediaPlayerEntityFeature.SELECT_SOURCE
-        | MediaPlayerEntityFeature.BROWSE_MEDIA
-    )
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
 
     def __init__(
@@ -1151,6 +1148,7 @@ class PagingBus(MediaPlayerEntity):
         use_zone_labels: bool,
         paging_post_delay_ms: int = _PAGING_POST_DELAY_MS_DEFAULT,
         paging_usb_device: str | None = None,
+        paging_stage_before_play: bool = False,
     ) -> None:
         """Init."""
         self._mixer: DCM1Mixer = mixer
@@ -1159,12 +1157,25 @@ class PagingBus(MediaPlayerEntity):
         self._use_zone_labels: bool = use_zone_labels
         self._paging_post_delay_ms: int = paging_post_delay_ms
         self._paging_usb_device: str | None = paging_usb_device
+        self._paging_stage_before_play: bool = paging_stage_before_play
+        self._our_page_mask: str | None = None  # The mask we requested; None when no page in progress
+        self._staged_media_id: str | None = None
+        self._staged_media_type: str | None = None
         unique_base = f"dcm1_{mixer._hostname.replace('.', '_')}"
         self._attr_unique_id = f"{unique_base}_paging_bus"
         self._media_title: str | None = None
         self._media_artist: str | None = None
         self._media_content_type: str | None = None
         self._attr_state = MediaPlayerState.IDLE
+        # Build feature set — transport controls only added in staging mode
+        features = (
+            MediaPlayerEntityFeature.PLAY_MEDIA
+            | MediaPlayerEntityFeature.SELECT_SOURCE
+            | MediaPlayerEntityFeature.BROWSE_MEDIA
+        )
+        if paging_stage_before_play:
+            features |= MediaPlayerEntityFeature.PLAY | MediaPlayerEntityFeature.STOP
+        self._attr_supported_features = features
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to flag changes so the source display updates when switches are toggled."""
@@ -1246,25 +1257,55 @@ class PagingBus(MediaPlayerEntity):
         busy = bool(mask and "X" in mask)
         if busy:
             self._attr_state = MediaPlayerState.PLAYING
-            if self._media_title is None:
-                # Paging opened by external hardware (physical mic, SD card, etc.)
+            if mask != self._our_page_mask:
+                # Mask doesn't match what we requested — external hardware (physical mic, SD card, etc.)
                 self._media_title = "Unknown"
                 self._media_artist = "External"
                 self._media_content_type = None
+            self.schedule_update_ha_state()
         else:
-            self._attr_state = MediaPlayerState.IDLE
-            self._media_title = None
-            self._media_artist = None
-            self._media_content_type = None
-        self.schedule_update_ha_state()
+            self._clear_playing_state()
 
     async def async_play_media(self, media_type: str, media_id: str, **kwargs) -> None:
-        """Page to all zones currently flagged use_for_next_bus_page."""
+        """Stage or immediately page depending on configuration."""
+        if self._paging_stage_before_play:
+            # Staging mode: store the media and wait for the user to press Play
+            self._staged_media_id = media_id
+            self._staged_media_type = media_type
+            title = media_id.split("/")[-1] or media_id
+            self._media_title = title
+            self._media_artist = "Staged — press ▶ to page"
+            self._media_content_type = media_type
+            self._attr_state = MediaPlayerState.PAUSED
+            self.schedule_update_ha_state()
+            return
+        # Immediate mode: page straight away
         mask = self._build_paging_mask()
         if "X" not in mask:
             _LOGGER.warning("Paging bus: no zones selected (all use_for_next_bus_page=False), aborting")
             return
         await self.async_page_with_mask(media_type, media_id, mask, "Paging bus")
+
+    async def async_media_play(self) -> None:
+        """Execute the staged page (only used in staging mode)."""
+        if self._staged_media_id is None:
+            return
+        media_id = self._staged_media_id
+        media_type = self._staged_media_type or ""
+        mask = self._build_paging_mask()
+        if "X" not in mask:
+            _LOGGER.warning("Paging bus: no zones selected, discarding staged page")
+            self._staged_media_id = None
+            self._staged_media_type = None
+            self._clear_playing_state()
+            return
+        await self.async_page_with_mask(media_type, media_id, mask, "Paging bus")
+        # _clear_playing_state() in the finally block already restored PAUSED because
+        # _staged_media_id is still set — nothing to do here.
+
+    async def async_media_stop(self) -> None:
+        """Discard staged media (only used in staging mode)."""
+        self._clear_playing_state(stop=True)
 
     async def async_page_with_mask(
         self,
@@ -1279,7 +1320,7 @@ class PagingBus(MediaPlayerEntity):
         async_play_media each compute an appropriate mask and call here.
 
         Args:
-            media_type:  Passed through to _set_now_playing.
+            media_type:  Passed through to _prepare_page.
             media_id:    Local file path, relative URL, or media-source:// URI.
             mask:        8-char XO string, e.g. 'XOOOOOOO' = zone 1 only.
             source_name: Display name shown as the artist on the paging bus card.
@@ -1308,7 +1349,7 @@ class PagingBus(MediaPlayerEntity):
         if duration:
             _LOGGER.info("Paging bus: media duration %.1fs", duration)
 
-        self._set_now_playing(media_id, media_type, source_name)
+        self._prepare_page(media_id, media_type, source_name, mask)
         try:
             await self._mixer.start_paging_with_mask(mask)
 
@@ -1325,7 +1366,7 @@ class PagingBus(MediaPlayerEntity):
                     await asyncio.sleep(remaining)
         finally:
             await self._mixer.stop_all_paging()
-            self._clear_now_playing()
+            self._clear_playing_state()
             if local_path != media_id and os.path.exists(local_path):
                 try:
                     await self.hass.async_add_executor_job(os.remove, local_path)
@@ -1340,18 +1381,47 @@ class PagingBus(MediaPlayerEntity):
         """Build an 8-char XO mask from the current paging_flags state."""
         return "".join("X" if self._paging_flags.get(k, False) else "O" for k in range(1, 9))
 
-    def _set_now_playing(self, title: str, content_type: str, source_name: str) -> None:
-        """Called by async_page_with_mask before paging starts."""
+    def _prepare_page(self, title: str, content_type: str, source_name: str, mask: str) -> None:
+        """Record media metadata and store the expected paging mask before paging starts.
+
+        Stores the requested zone mask in _our_page_mask so that when the hardware busy
+        callback fires, on_paging_status_changed can compare the reported mask against it.
+        If they match, the page is ours and we keep our media metadata.  If they differ,
+        some external source opened different zones and we show "Unknown/External" instead.
+
+        There is still a narrow race: an external page could open the exact same zone
+        combination in the gap between this call and the hardware confirming busy, which
+        would be misidentified as ours.  The worst outcome is a cosmetic title mismatch
+        that self-corrects when the page ends.
+
+        State transitions to PLAYING only when the hardware confirms the bus is busy
+        via on_paging_status_changed; this method intentionally does not touch _attr_state.
+        """
+        self._our_page_mask = mask
         self._media_title = title
         self._media_content_type = content_type
         self._media_artist = source_name
-        self._attr_state = MediaPlayerState.PLAYING
         self.schedule_update_ha_state()
 
-    def _clear_now_playing(self) -> None:
-        """Called by async_page_with_mask in the finally block after paging ends."""
-        self._media_title = None
-        self._media_content_type = None
-        self._media_artist = None
-        self._attr_state = MediaPlayerState.IDLE
+    def _clear_playing_state(self, stop: bool = False) -> None:
+        """Called whenever playback ends: finally block, async_media_stop, or not-busy callback.
+
+        If stop=True (stop button pressed), always transitions to IDLE and discards staged media.
+        Otherwise, if staged media is queued, restores PAUSED so the user can replay.
+        """
+        self._our_page_mask = None
+        if stop:
+            self._staged_media_id = None
+            self._staged_media_type = None
+        if self._staged_media_id is not None:
+            title = self._staged_media_id.split("/")[-1] or self._staged_media_id
+            self._media_title = title
+            self._media_artist = "Staged — press ▶ to page"
+            self._media_content_type = self._staged_media_type
+            self._attr_state = MediaPlayerState.PAUSED
+        else:
+            self._media_title = None
+            self._media_content_type = None
+            self._media_artist = None
+            self._attr_state = MediaPlayerState.IDLE
         self.schedule_update_ha_state()
