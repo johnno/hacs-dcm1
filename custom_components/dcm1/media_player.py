@@ -1272,6 +1272,8 @@ class PagingBus(MediaPlayerEntity):
             # Staging mode: store the media and wait for the user to press Play
             self._staged_media_id = media_id
             self._staged_media_type = media_type
+            # TODO: Look at calling clear_playing_state() here
+            # instead of duplicate lines of code.
             title = media_id.split("/")[-1] or media_id
             self._media_title = title
             self._media_artist = "Staged — press ▶ to page"
@@ -1367,7 +1369,7 @@ class PagingBus(MediaPlayerEntity):
         finally:
             await self._mixer.stop_all_paging()
             self._clear_playing_state()
-            if local_path != media_id and os.path.exists(local_path):
+            if local_path.startswith("/tmp/dcm1_paging_") and os.path.exists(local_path):
                 try:
                     await self.hass.async_add_executor_job(os.remove, local_path)
                 except Exception as exc:  # noqa: BLE001
