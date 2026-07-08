@@ -790,9 +790,29 @@ class MixerZone(MediaPlayerEntity):
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
         if self._source_locked_volume is not None and not self._applying_default_volume:
-            _LOGGER.debug("Zone %s: volume change blocked by source lock", self.zone_id)
-            self._attr_volume_level = self._source_locked_volume
-            self.schedule_update_ha_state()
+            locked_volume = self._source_locked_volume
+            if volume == locked_volume:
+                return  # Already at locked position
+            # Accept the drag temporarily so HA sees a real state change (locked→drag).
+            # Set _pending_volume to the locked level so when DCM1 confirms the
+            # re-asserted locked command, maybe_update_volume_level_from_device
+            # commits the snap-back (drag→locked) as a second state change.
+            # This is the same mechanism as normal volume changes — no async tricks.
+            if locked_volume == 0.0:
+                locked_raw = self._volume_db_range
+            else:
+                locked_raw = round(self._volume_db_range * (1.0 - locked_volume))
+                locked_raw = max(0, min(self._volume_db_range, locked_raw))
+            _LOGGER.debug(
+                "Zone %s: locked at %.0f%% — briefly showing %.0f%% then snapping back on DCM1 confirm",
+                self.zone_id, locked_volume * 100, volume * 100,
+            )
+            self._pending_volume = locked_volume
+            self._pending_raw_volume_level = locked_raw
+            self._pending_volume_rejected_count = 0
+            self._attr_volume_level = volume  # Show drag briefly
+            self.schedule_update_ha_state()   # Fires state_changed: locked→drag
+            self._mixer.set_zone_volume(zone_id=self.zone_id, level=locked_raw)  # Re-assert lock
             return
         # Convert HA volume (0.0-1.0) to DCM1 level
         # Linear mapping in dB space: level = range * (1 - volume)
@@ -873,10 +893,8 @@ class MixerZone(MediaPlayerEntity):
             self._mixer.set_zone_volume(zone_id=self.zone_id, level=level)
 
     async def async_set_volume_level(self, volume: float) -> None:
-        """Called by HA for user volume changes. Enforces source lock in the event loop."""
-        # Determine active lock — use cache or re-derive from current source
-        locked_volume = self._source_locked_volume
-        if locked_volume is None and self._input_volume_defaults and self._attr_source:
+        """Called by HA for user volume changes; refreshes lock cache then delegates."""
+        if self._source_locked_volume is None and self._input_volume_defaults and self._attr_source:
             source_obj = self._mixer.sources_by_name.get(self._attr_source)
             if source_obj:
                 result = _find_default_volume(
@@ -885,34 +903,7 @@ class MixerZone(MediaPlayerEntity):
                 if result is not None:
                     default_vol, lock = result
                     if lock:
-                        locked_volume = default_vol
                         self._source_locked_volume = default_vol
-
-        if locked_volume is not None:
-            if volume == locked_volume:
-                return  # Slider already at locked position
-            _LOGGER.debug(
-                "Zone %s: lock active — accepting %.0f%% briefly then snapping to %.0f%%",
-                self.zone_id, volume * 100, locked_volume * 100,
-            )
-            # Accept the drag so HA state changes from locked→requested.
-            # This gives the WebSocket subscriber a real diff to send to the client,
-            # clearing the frontend's optimistic view of the drag.
-            self._attr_volume_level = volume
-            self.async_write_ha_state()
-            # Schedule snap-back as a NEW task so it runs in a future event loop
-            # iteration — AFTER the accepted-drag state write has been fully
-            # dispatched to WebSocket clients.
-            zone_locked = locked_volume  # capture for closure
-            async def _snap_back_zone():
-                self._applying_default_volume = True
-                try:
-                    self.set_volume_level(zone_locked)
-                finally:
-                    self._applying_default_volume = False
-            self.hass.async_create_task(_snap_back_zone())
-            return
-
         self.set_volume_level(volume)
 
     async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
@@ -1232,9 +1223,24 @@ class MixerGroup(MediaPlayerEntity):
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
         if self._source_locked_volume is not None and not self._applying_default_volume:
-            _LOGGER.debug("Group %s: volume change blocked by source lock", self.group_id)
-            self._attr_volume_level = self._source_locked_volume
-            self.schedule_update_ha_state()
+            locked_volume = self._source_locked_volume
+            if volume == locked_volume:
+                return
+            if locked_volume == 0.0:
+                locked_raw = self._volume_db_range
+            else:
+                locked_raw = round(self._volume_db_range * (1.0 - locked_volume))
+                locked_raw = max(0, min(self._volume_db_range, locked_raw))
+            _LOGGER.debug(
+                "Group %s: locked at %.0f%% — briefly showing %.0f%% then snapping back on DCM1 confirm",
+                self.group_id, locked_volume * 100, volume * 100,
+            )
+            self._pending_volume = locked_volume
+            self._pending_raw_volume_level = locked_raw
+            self._pending_volume_rejected_count = 0
+            self._attr_volume_level = volume
+            self.schedule_update_ha_state()   # Fires state_changed: locked→drag
+            self._mixer.set_group_volume(group_id=self.group_id, level=locked_raw)  # Re-assert lock
             return
         # Convert HA volume (0.0-1.0) to DCM1 level
         # Linear mapping in dB space: level = range * (1 - volume)
@@ -1319,9 +1325,8 @@ class MixerGroup(MediaPlayerEntity):
             self._mixer.set_group_volume(group_id=self.group_id, level=level)
 
     async def async_set_volume_level(self, volume: float) -> None:
-        """Called by HA for user volume changes. Enforces source lock in the event loop."""
-        locked_volume = self._source_locked_volume
-        if locked_volume is None and self._input_volume_defaults and self._attr_source:
+        """Called by HA for user volume changes; refreshes lock cache then delegates."""
+        if self._source_locked_volume is None and self._input_volume_defaults and self._attr_source:
             source_obj = self._mixer.sources_by_name.get(self._attr_source)
             if source_obj:
                 result = _find_default_volume(
@@ -1330,28 +1335,7 @@ class MixerGroup(MediaPlayerEntity):
                 if result is not None:
                     default_vol, lock = result
                     if lock:
-                        locked_volume = default_vol
                         self._source_locked_volume = default_vol
-
-        if locked_volume is not None:
-            if volume == locked_volume:
-                return
-            _LOGGER.debug(
-                "Group %s: lock active — accepting %.0f%% briefly then snapping to %.0f%%",
-                self.group_id, volume * 100, locked_volume * 100,
-            )
-            self._attr_volume_level = volume
-            self.async_write_ha_state()
-            group_locked = locked_volume
-            async def _snap_back_group():
-                self._applying_default_volume = True
-                try:
-                    self.set_volume_level(group_locked)
-                finally:
-                    self._applying_default_volume = False
-            self.hass.async_create_task(_snap_back_group())
-            return
-
         self.set_volume_level(volume)
 
     async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
