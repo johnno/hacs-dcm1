@@ -498,15 +498,23 @@ class MixerZone(MediaPlayerEntity):
     _attr_should_poll = False
     _attr_name = None
 
-    _attr_supported_features = (
-        MediaPlayerEntityFeature.SELECT_SOURCE
-        | MediaPlayerEntityFeature.VOLUME_SET
-        | MediaPlayerEntityFeature.VOLUME_STEP
-        | MediaPlayerEntityFeature.VOLUME_MUTE
-        | MediaPlayerEntityFeature.PLAY_MEDIA
-        | MediaPlayerEntityFeature.BROWSE_MEDIA
-    )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
+
+    @property
+    def supported_features(self) -> MediaPlayerEntityFeature:
+        """Return supported features. Volume controls are removed when source is locked."""
+        features = (
+            MediaPlayerEntityFeature.SELECT_SOURCE
+            | MediaPlayerEntityFeature.VOLUME_MUTE
+            | MediaPlayerEntityFeature.PLAY_MEDIA
+            | MediaPlayerEntityFeature.BROWSE_MEDIA
+        )
+        if self._source_locked_volume is None:
+            features |= (
+                MediaPlayerEntityFeature.VOLUME_SET
+                | MediaPlayerEntityFeature.VOLUME_STEP
+            )
+        return features
 
     def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None, input_volume_defaults=None) -> None:
         """Init."""
@@ -618,6 +626,7 @@ class MixerZone(MediaPlayerEntity):
         result = _find_default_volume(self._input_volume_defaults, self._zone_key, source_id)
         if result is None:
             self._source_locked_volume = None
+            self.schedule_update_ha_state()  # Restore VOLUME_SET feature
             return
         volume, lock = result
         self._source_locked_volume = volume if lock else None
@@ -850,6 +859,13 @@ class MixerZone(MediaPlayerEntity):
             self._pre_mute_raw_volume = self._raw_volume_level
             self._mixer.set_zone_volume(zone_id=self.zone_id, level=62)  # 62 = mute
         else:
+            # If source is locked, always restore to locked level on unmute
+            if self._source_locked_volume is not None:
+                locked_raw = round(self._volume_db_range * (1.0 - self._source_locked_volume))
+                self._pre_mute_volume = None
+                self._pre_mute_raw_volume = None
+                self._mixer.set_zone_volume(zone_id=self.zone_id, level=locked_raw)
+                return
             # Unmute to last known level before muting, or default to mid-range
             if self._pre_mute_raw_volume is not None:
                 # Restore using raw device level (avoids rounding, preserves sub-minimum levels)
@@ -882,13 +898,6 @@ class MixerZone(MediaPlayerEntity):
 
         if locked_volume is not None:
             _LOGGER.debug("Zone %s: volume change blocked by source lock", self.zone_id)
-            self._attr_volume_level = locked_volume
-            # force_update ensures state_changed fires even when locked_volume is already
-            # the current HA state value — without it the no-change write is silently
-            # dropped and the frontend's optimistic slider stays at the wrong position.
-            self._attr_force_update = True
-            self.async_write_ha_state()
-            self._attr_force_update = False
             return
 
         self.set_volume_level(volume)
@@ -914,15 +923,23 @@ class MixerGroup(MediaPlayerEntity):
     _attr_should_poll = False
     _attr_name = None
 
-    _attr_supported_features = (
-        MediaPlayerEntityFeature.SELECT_SOURCE
-        | MediaPlayerEntityFeature.VOLUME_SET
-        | MediaPlayerEntityFeature.VOLUME_STEP
-        | MediaPlayerEntityFeature.VOLUME_MUTE
-        | MediaPlayerEntityFeature.PLAY_MEDIA
-        | MediaPlayerEntityFeature.BROWSE_MEDIA
-    )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
+
+    @property
+    def supported_features(self) -> MediaPlayerEntityFeature:
+        """Return supported features. Volume controls are removed when source is locked."""
+        features = (
+            MediaPlayerEntityFeature.SELECT_SOURCE
+            | MediaPlayerEntityFeature.VOLUME_MUTE
+            | MediaPlayerEntityFeature.PLAY_MEDIA
+            | MediaPlayerEntityFeature.BROWSE_MEDIA
+        )
+        if self._source_locked_volume is None:
+            features |= (
+                MediaPlayerEntityFeature.VOLUME_SET
+                | MediaPlayerEntityFeature.VOLUME_STEP
+            )
+        return features
 
     def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None, input_volume_defaults=None) -> None:
         """Init."""
@@ -1042,6 +1059,7 @@ class MixerGroup(MediaPlayerEntity):
         result = _find_default_volume(self._input_volume_defaults, self._zone_key, source_id)
         if result is None:
             self._source_locked_volume = None
+            self.schedule_update_ha_state()  # Restore VOLUME_SET feature
             return
         volume, lock = result
         self._source_locked_volume = volume if lock else None
@@ -1274,6 +1292,13 @@ class MixerGroup(MediaPlayerEntity):
             self._pre_mute_raw_volume = self._raw_volume_level
             self._mixer.set_group_volume(group_id=self.group_id, level=62)  # 62 = mute
         else:
+            # If source is locked, always restore to locked level on unmute
+            if self._source_locked_volume is not None:
+                locked_raw = round(self._volume_db_range * (1.0 - self._source_locked_volume))
+                self._pre_mute_volume = None
+                self._pre_mute_raw_volume = None
+                self._mixer.set_group_volume(group_id=self.group_id, level=locked_raw)
+                return
             # Unmute to last known level before muting, or default to mid-range
             if self._pre_mute_raw_volume is not None:
                 # Restore using raw device level (avoids rounding, preserves sub-minimum levels)
@@ -1305,10 +1330,6 @@ class MixerGroup(MediaPlayerEntity):
 
         if locked_volume is not None:
             _LOGGER.debug("Group %s: volume change blocked by source lock", self.group_id)
-            self._attr_volume_level = locked_volume
-            self._attr_force_update = True
-            self.async_write_ha_state()
-            self._attr_force_update = False
             return
 
         self.set_volume_level(volume)
