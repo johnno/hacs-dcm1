@@ -17,6 +17,17 @@
                     "optimistic_volume": "Show volume changes immediately (optimistic)",
                     "entity_name_suffix": "Entity name suffix"
                 }
+            },
+            "reconfigure": {
+                "data": {
+                    "optimistic_volume": "Optimistic Volume",
+                    "entity_name_suffix": "Entity Name Suffix",
+                    "volume_db_range": "Volume DB Range (dB)",
+                    "paging_post_delay_ms": "Paging Post-Delay (ms)",
+                    "paging_usb_device": "USB DI Device Name",
+                    "paging_stage_before_play": "Stage paging before playing",
+                    "input_volume_defaults": "Input Volume Defaults"
+                }
             }
         }
     }

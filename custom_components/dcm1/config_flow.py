@@ -17,6 +17,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_ENTITY_NAME_SUFFIX,
+    CONF_INPUT_VOLUME_DEFAULTS,
     CONF_OPTIMISTIC_VOLUME,
     CONF_PAGING_POST_DELAY_MS,
     CONF_PAGING_STAGE_BEFORE_PLAY,
@@ -159,11 +160,18 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_PAGING_STAGE_BEFORE_PLAY,
                         default=config_entry.data.get(CONF_PAGING_STAGE_BEFORE_PLAY, False),
                     ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_INPUT_VOLUME_DEFAULTS,
+                        default=config_entry.data.get(CONF_INPUT_VOLUME_DEFAULTS, ""),
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(multiline=True)
+                    ),
                 }
             ),
             description_placeholders={
                 "volume_db_range_hint": "Attenuation range for volume slider. Higher values = more range (e.g., 40 dB means 0% = -40dB, 50% = -20dB, 100% = 0dB)",
                 "paging_usb_device_hint": "ALSA device name (e.g., 'hw:1,0') or CoreAudio device name. Leave empty for system default.",
+                "input_volume_defaults_hint": "One rule per line: zone,source,volume[,lock] — zone: 1-8, g1-g4, or * (all); source: 1-8 or *; volume: 0-100; lock: true/false",
             },
         )
 

@@ -37,6 +37,7 @@ from homeassistant.components.media_source import (
 
 from .const import (
     CONF_ENTITY_NAME_SUFFIX,
+    CONF_INPUT_VOLUME_DEFAULTS,
     CONF_OPTIMISTIC_VOLUME,
     CONF_PAGING_POST_DELAY_MS,
     CONF_PAGING_STAGE_BEFORE_PLAY,
@@ -222,6 +223,80 @@ async def _run_audio_cmd(cmd: list[str], logger) -> None:
         logger.error("Failed to play paging audio: %s", exc)
 
 
+def _parse_input_volume_defaults(text: str) -> list[dict]:
+    """Parse per-input volume default rules from a multiline text string.
+
+    Format (one rule per line): zone,source,volume[,lock]
+      zone:   zone number 1-8, group prefix g1-g4, or * for all outputs
+      source: source number 1-8, or * for all sources
+      volume: integer 0-100 (percent)
+      lock:   optional true/false (default false)
+
+    Lines beginning with # and blank lines are ignored.
+    """
+    rules = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            _LOGGER.warning("input_volume_defaults: ignoring malformed rule: %s", line)
+            continue
+        zone = parts[0].lower()
+        source = parts[1].strip()
+        try:
+            volume_pct = int(parts[2])
+        except ValueError:
+            _LOGGER.warning("input_volume_defaults: invalid volume in rule: %s", line)
+            continue
+        lock = len(parts) >= 4 and parts[3].strip().lower() == "true"
+        if zone != "*" and not zone.isdigit() and not (
+            zone.startswith("g") and zone[1:].isdigit()
+        ):
+            _LOGGER.warning(
+                "input_volume_defaults: invalid zone '%s' in rule: %s", zone, line
+            )
+            continue
+        if source != "*":
+            try:
+                int(source)
+            except ValueError:
+                _LOGGER.warning(
+                    "input_volume_defaults: invalid source '%s' in rule: %s", source, line
+                )
+                continue
+        volume = max(0.0, min(1.0, volume_pct / 100.0))
+        rules.append({"zone": zone, "source": source, "volume": volume, "lock": lock})
+    return rules
+
+
+def _find_default_volume(
+    defaults: list[dict], zone_key: str, source_id: int
+) -> tuple[float, bool] | None:
+    """Find the best-matching default volume rule for a (zone, source) pair.
+
+    Priority (most specific wins):
+      1. exact zone + exact source
+      2. wildcard zone (*) + exact source
+      3. exact zone + wildcard source (*)
+      4. wildcard zone (*) + wildcard source (*)
+
+    Returns (volume_0_to_1, lock) or None if no rule matches.
+    """
+    source_str = str(source_id)
+    for z, s in (
+        (zone_key, source_str),
+        ("*", source_str),
+        (zone_key, "*"),
+        ("*", "*"),
+    ):
+        for rule in defaults:
+            if rule["zone"] == z and rule["source"] == s:
+                return rule["volume"], rule["lock"]
+    return None
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -241,6 +316,9 @@ async def async_setup_entry(
     paging_post_delay_ms = config_entry.data.get(CONF_PAGING_POST_DELAY_MS, DEFAULT_PAGING_POST_DELAY_MS)
     paging_usb_device = config_entry.data.get(CONF_PAGING_USB_DEVICE, None)
     paging_stage_before_play = config_entry.data.get(CONF_PAGING_STAGE_BEFORE_PLAY, False)
+    input_volume_defaults = _parse_input_volume_defaults(
+        config_entry.data.get(CONF_INPUT_VOLUME_DEFAULTS, "")
+    )
     
     # Query all mixer state (zones, sources, groups, line inputs, volume, status)
     #_LOGGER.info("Querying all mixer state from device")
@@ -278,7 +356,7 @@ async def async_setup_entry(
         enabled_inputs = mixer.get_zone_enabled_line_inputs(zone_id)
         _LOGGER.info("DEBUG: Zone %s enabled_inputs returned: %s", zone_id, enabled_inputs)
         _LOGGER.info("DEBUG: Zone %s type: %s, bool: %s, len: %s", zone_id, type(enabled_inputs), bool(enabled_inputs), len(enabled_inputs) if enabled_inputs else 0)
-        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_post_delay_ms, paging_usb_device, paging_bus_entity=paging_bus)
+        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_post_delay_ms, paging_usb_device, paging_bus_entity=paging_bus, input_volume_defaults=input_volume_defaults)
         zone_entities[zone.id] = mixer_zone
         entities.append(mixer_zone)
 
@@ -292,7 +370,7 @@ async def async_setup_entry(
             enabled_inputs = mixer.get_group_enabled_line_inputs(group_id)
             _LOGGER.info("DEBUG: Group %s enabled_inputs returned: %s", group_id, enabled_inputs)
             _LOGGER.info("DEBUG: Type of enabled_inputs: %s, bool check: %s", type(enabled_inputs), bool(enabled_inputs))
-            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_post_delay_ms, paging_usb_device, paging_bus_entity=paging_bus)
+            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_post_delay_ms, paging_usb_device, paging_bus_entity=paging_bus, input_volume_defaults=input_volume_defaults)
             group_entities[group.id] = mixer_group
             entities.append(mixer_group)
         else:
@@ -430,7 +508,7 @@ class MixerZone(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None) -> None:
+    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None, input_volume_defaults=None) -> None:
         """Init."""
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
@@ -442,6 +520,10 @@ class MixerZone(MediaPlayerEntity):
         self._paging_post_delay_ms: int = paging_post_delay_ms
         self._paging_usb_device: str | None = paging_usb_device
         self._paging_bus_entity: PagingBus | None = paging_bus_entity
+        self._input_volume_defaults: list[dict] = input_volume_defaults or []
+        self._zone_key: str = str(zone_id)
+        self._source_locked_volume: float | None = None
+        self._applying_default_volume: bool = False
         
         _LOGGER.debug(f"Zone {zone_id} enabled_line_inputs: {self._enabled_line_inputs}")
         
@@ -529,6 +611,25 @@ class MixerZone(MediaPlayerEntity):
         if source:
             self._attr_source = source.name
             self.schedule_update_ha_state()
+            self._apply_source_default(source_id)
+
+    def _apply_source_default(self, source_id: int) -> None:
+        """Apply configured default volume when switching to this source."""
+        result = _find_default_volume(self._input_volume_defaults, self._zone_key, source_id)
+        if result is None:
+            self._source_locked_volume = None
+            return
+        volume, lock = result
+        self._source_locked_volume = volume if lock else None
+        _LOGGER.info(
+            "Zone %s: applying default volume %.0f%% for source %s%s",
+            self.zone_id, volume * 100, source_id, " (locked)" if lock else "",
+        )
+        self._applying_default_volume = True
+        try:
+            self.set_volume_level(volume)
+        finally:
+            self._applying_default_volume = False
 
     def _build_source_list(self) -> list[str]:
         """Build filtered source list based on enabled line inputs."""
@@ -608,6 +709,17 @@ class MixerZone(MediaPlayerEntity):
                     )
                     return
         
+        # Lock enforcement: if source is locked to a specific volume, re-apply if device drifted
+        if self._source_locked_volume is not None and level != "mute":
+            locked_raw = round(self._volume_db_range * (1.0 - self._source_locked_volume))
+            if level_int != locked_raw:
+                _LOGGER.debug(
+                    "Zone %s: volume drifted from lock (device=%s, expected=%s); re-applying",
+                    self.zone_id, level_int, locked_raw,
+                )
+                self._mixer.set_zone_volume(zone_id=self.zone_id, level=locked_raw)
+                return
+
         # Response accepted - now modify state
         if level == "mute":
             self._is_volume_muted = True
@@ -676,6 +788,9 @@ class MixerZone(MediaPlayerEntity):
 
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
+        if self._source_locked_volume is not None and not self._applying_default_volume:
+            _LOGGER.debug("Zone %s: volume change blocked by source lock", self.zone_id)
+            return
         # Convert HA volume (0.0-1.0) to DCM1 level
         # Linear mapping in dB space: level = range * (1 - volume)
         # Example with range=40: 0%→40 (-40dB), 50%→20 (-20dB), 100%→0 (0dB)
@@ -778,7 +893,7 @@ class MixerGroup(MediaPlayerEntity):
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None) -> None:
+    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None, input_volume_defaults=None) -> None:
         """Init."""
         self.group_id = group_id
         self._mixer: DCM1Mixer = mixer
@@ -790,6 +905,10 @@ class MixerGroup(MediaPlayerEntity):
         self._paging_post_delay_ms: int = paging_post_delay_ms
         self._paging_usb_device: str | None = paging_usb_device
         self._paging_bus_entity: PagingBus | None = paging_bus_entity
+        self._input_volume_defaults: list[dict] = input_volume_defaults or []
+        self._zone_key: str = f"g{group_id}"
+        self._source_locked_volume: float | None = None
+        self._applying_default_volume: bool = False
         
         _LOGGER.debug(f"Group {group_id} enabled_line_inputs: {self._enabled_line_inputs}")
         
@@ -885,6 +1004,25 @@ class MixerGroup(MediaPlayerEntity):
         if source:
             self._attr_source = source.name
             self.schedule_update_ha_state()
+            self._apply_source_default(source_id)
+
+    def _apply_source_default(self, source_id: int) -> None:
+        """Apply configured default volume when switching to this source."""
+        result = _find_default_volume(self._input_volume_defaults, self._zone_key, source_id)
+        if result is None:
+            self._source_locked_volume = None
+            return
+        volume, lock = result
+        self._source_locked_volume = volume if lock else None
+        _LOGGER.info(
+            "Group %s: applying default volume %.0f%% for source %s%s",
+            self.group_id, volume * 100, source_id, " (locked)" if lock else "",
+        )
+        self._applying_default_volume = True
+        try:
+            self.set_volume_level(volume)
+        finally:
+            self._applying_default_volume = False
 
     def _build_source_list(self) -> list[str]:
         """Build filtered source list based on enabled line inputs."""
@@ -957,6 +1095,17 @@ class MixerGroup(MediaPlayerEntity):
                     )
                     return
         
+        # Lock enforcement: if source is locked to a specific volume, re-apply if device drifted
+        if self._source_locked_volume is not None and level != "mute":
+            locked_raw = round(self._volume_db_range * (1.0 - self._source_locked_volume))
+            if level_int != locked_raw:
+                _LOGGER.debug(
+                    "Group %s: volume drifted from lock (device=%s, expected=%s); re-applying",
+                    self.group_id, level_int, locked_raw,
+                )
+                self._mixer.set_group_volume(group_id=self.group_id, level=locked_raw)
+                return
+
         # Response accepted - now modify state
         if level == "mute":
             self._is_volume_muted = True
@@ -1028,6 +1177,9 @@ class MixerGroup(MediaPlayerEntity):
 
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
+        if self._source_locked_volume is not None and not self._applying_default_volume:
+            _LOGGER.debug("Group %s: volume change blocked by source lock", self.group_id)
+            return
         # Convert HA volume (0.0-1.0) to DCM1 level
         # Linear mapping in dB space: level = range * (1 - volume)
         # Example with range=40: 0%→40 (-40dB), 50%→20 (-20dB), 100%→0 (0dB)

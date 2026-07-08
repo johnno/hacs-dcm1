@@ -14,6 +14,8 @@ CONF_PAGING_POST_DELAY_MS = "paging_post_delay_ms"
 CONF_PAGING_USB_DEVICE = "paging_usb_device"
 CONF_PAGING_STAGE_BEFORE_PLAY = "paging_stage_before_play"
 
+CONF_INPUT_VOLUME_DEFAULTS = "input_volume_defaults"
+
 DEFAULT_PAGING_POST_DELAY_MS = 2500
 
 # Dispatcher signal fired when any zone's paging inclusion flag changes.

@@ -18,9 +18,10 @@
           "volume_db_range": "Volume DB Range",
           "paging_pre_delay_ms": "Paging Pre-Delay (ms)",
           "paging_post_delay_ms": "Paging Post-Delay (ms)",
-          "paging_usb_device": "USB DI Device Name"
+          "paging_usb_device": "USB DI Device Name",
+          "input_volume_defaults": "Input Volume Defaults"
         },
-        "description": "Adjust the configuration for the DCM1 Zone Mixer. {volume_db_range_hint}\n\n**Paging Settings**:\n- **Pre-Delay**: Time to wait after opening paging before playing audio.\n- **Post-Delay**: Time to wait after audio finishes before closing paging.\n- **USB Device**: {paging_usb_device_hint}"
+        "description": "Adjust the configuration for the DCM1 Zone Mixer. {volume_db_range_hint}\n\n**Paging Settings**:\n- **Pre-Delay**: Time to wait after opening paging before playing audio.\n- **Post-Delay**: Time to wait after audio finishes before closing paging.\n- **USB Device**: {paging_usb_device_hint}\n\n**Input Volume Defaults**: {input_volume_defaults_hint}"
       }
     },
     "error": {
