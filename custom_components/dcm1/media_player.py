@@ -864,6 +864,30 @@ class MixerZone(MediaPlayerEntity):
                 level = self._volume_db_range // 2  # Default to mid-range if slider at 0% or unknown
             self._mixer.set_zone_volume(zone_id=self.zone_id, level=level)
 
+    async def async_set_volume_level(self, volume: float) -> None:
+        """Called by HA for user volume changes. Enforces source lock in the event loop."""
+        # Determine active lock — use cache or re-derive from current source
+        locked_volume = self._source_locked_volume
+        if locked_volume is None and self._input_volume_defaults and self._attr_source:
+            source_obj = self._mixer.sources_by_name.get(self._attr_source)
+            if source_obj:
+                result = _find_default_volume(
+                    self._input_volume_defaults, self._zone_key, source_obj.id
+                )
+                if result is not None:
+                    default_vol, lock = result
+                    if lock:
+                        locked_volume = default_vol
+                        self._source_locked_volume = default_vol
+
+        if locked_volume is not None:
+            _LOGGER.debug("Zone %s: volume change blocked by source lock", self.zone_id)
+            self._attr_volume_level = locked_volume
+            self.async_write_ha_state()
+            return
+
+        self.set_volume_level(volume)
+
     async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
         """Implement the media browsing interface."""
         return await media_source_browse_media(self.hass, media_content_id)
@@ -1258,6 +1282,29 @@ class MixerGroup(MediaPlayerEntity):
             else:
                 level = self._volume_db_range // 2  # Default to mid-range if slider at 0% or unknown
             self._mixer.set_group_volume(group_id=self.group_id, level=level)
+
+    async def async_set_volume_level(self, volume: float) -> None:
+        """Called by HA for user volume changes. Enforces source lock in the event loop."""
+        locked_volume = self._source_locked_volume
+        if locked_volume is None and self._input_volume_defaults and self._attr_source:
+            source_obj = self._mixer.sources_by_name.get(self._attr_source)
+            if source_obj:
+                result = _find_default_volume(
+                    self._input_volume_defaults, self._zone_key, source_obj.id
+                )
+                if result is not None:
+                    default_vol, lock = result
+                    if lock:
+                        locked_volume = default_vol
+                        self._source_locked_volume = default_vol
+
+        if locked_volume is not None:
+            _LOGGER.debug("Group %s: volume change blocked by source lock", self.group_id)
+            self._attr_volume_level = locked_volume
+            self.async_write_ha_state()
+            return
+
+        self.set_volume_level(volume)
 
     async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
         """Implement the media browsing interface."""
