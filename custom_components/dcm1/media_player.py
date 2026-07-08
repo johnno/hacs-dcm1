@@ -883,7 +883,12 @@ class MixerZone(MediaPlayerEntity):
         if locked_volume is not None:
             _LOGGER.debug("Zone %s: volume change blocked by source lock", self.zone_id)
             self._attr_volume_level = locked_volume
+            # force_update ensures state_changed fires even when locked_volume is already
+            # the current HA state value — without it the no-change write is silently
+            # dropped and the frontend's optimistic slider stays at the wrong position.
+            self._attr_force_update = True
             self.async_write_ha_state()
+            self._attr_force_update = False
             return
 
         self.set_volume_level(volume)
@@ -1301,7 +1306,9 @@ class MixerGroup(MediaPlayerEntity):
         if locked_volume is not None:
             _LOGGER.debug("Group %s: volume change blocked by source lock", self.group_id)
             self._attr_volume_level = locked_volume
+            self._attr_force_update = True
             self.async_write_ha_state()
+            self._attr_force_update = False
             return
 
         self.set_volume_level(volume)
