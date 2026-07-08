@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import asyncio.subprocess
+import hashlib
 import logging
+import os
+import shutil
 
 from pydcm1.listener import MixerResponseListener
 from pydcm1.mixer import DCM1Mixer
 
 from homeassistant.components.media_player import (
+    BrowseMedia,
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
@@ -17,17 +22,204 @@ from homeassistant.components.media_player import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.network import get_url
+
+from homeassistant.components.media_source import (
+    PlayMedia,
+    async_browse_media as media_source_browse_media,
+    async_resolve_media,
+    is_media_source_id,
+)
 
 from .const import (
     CONF_ENTITY_NAME_SUFFIX,
     CONF_OPTIMISTIC_VOLUME,
+    CONF_PAGING_POST_DELAY_MS,
+    CONF_PAGING_STAGE_BEFORE_PLAY,
+    CONF_PAGING_USB_DEVICE,
     CONF_USE_ZONE_LABELS,
+    CONF_VOLUME_DB_RANGE,
+    DEFAULT_PAGING_POST_DELAY_MS,
     DOMAIN,
+    SIGNAL_PAGING_FLAGS_CHANGED,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Default paging timing (can be overridden via config_entry.data)
+_PAGING_POST_DELAY_MS_DEFAULT = 200  # ms after audio ends, before paging closes
+
+
+async def _play_paging_audio(
+    media_id: str,
+    usb_device: str | None,
+    logger,
+    post_delay_ms: int = 0,
+) -> None:
+    """Play audio through the USB DI sound device for paging.
+
+    Attempts to use ffplay (Linux / HA OS) then afplay (macOS) in order.
+    If those are missing, falls back to ffmpeg directly (which is more
+    common in HA environments).
+
+    Args:
+        media_id: Local file path or HTTP URL to the audio file.
+        usb_device: Optional ALSA/CoreAudio device name. None = system default.
+        logger: Logger instance for this call.
+        post_delay_ms: Silence to append after the message (ms). Implemented via
+            apad filter for ffmpeg/ffplay, or a plain sleep for afplay.
+    """
+    pad_dur = post_delay_ms / 1000.0 if post_delay_ms > 0 else 0.0
+
+    # 1. Try ffplay (preferred as it handles audio output gracefully)
+    ffplay_path = shutil.which("ffplay") or shutil.which("/opt/homebrew/bin/ffplay") or shutil.which("/usr/bin/ffplay")
+    if ffplay_path:
+        cmd = [ffplay_path, "-nodisp", "-autoexit", "-loglevel", "warning"]
+        if pad_dur:
+            cmd += ["-af", f"apad=pad_dur={pad_dur:.3f}"]
+        if usb_device:
+            cmd += ["-device", usb_device]
+        cmd.append(media_id)
+        return await _run_audio_cmd(cmd, logger)
+
+    # 2. Try afplay (macOS specific) — no filter support, fall back to a sleep
+    afplay_path = shutil.which("afplay") or shutil.which("/usr/bin/afplay")
+    if afplay_path:
+        cmd = [afplay_path]
+        if usb_device:
+            cmd += ["-d", usb_device]
+        cmd.append(media_id)
+        result = await _run_audio_cmd(cmd, logger)
+        if pad_dur:
+            await asyncio.sleep(pad_dur)
+        return result
+
+    # 3. Fallback to ffmpeg (most common in HA OS / Core via 'ffmpeg:' integration)
+    ffmpeg_path = shutil.which("ffmpeg") or shutil.which("/opt/homebrew/bin/ffmpeg") or shutil.which("/usr/bin/ffmpeg")
+    if ffmpeg_path:
+        # We must specify the output format based on the platform.
+        # Darwin = CoreAudio, Linux/HAOS = PulseAudio (default) or ALSA (explicit hw:).
+        import platform
+        cmd = [ffmpeg_path, "-i", media_id, "-loglevel", "error"]
+        if pad_dur:
+            cmd += ["-af", f"apad=pad_dur={pad_dur:.3f}"]
+        if platform.system() == "Darwin":
+            cmd += ["-f", "coreaudio", usb_device or "default"]
+        else:
+            # For Linux/HAOS: 
+            # If user specifies 'hw:X,Y', they want direct ALSA hardware access.
+            if usb_device and usb_device.startswith("hw:"):
+                cmd += ["-f", "alsa", usb_device]
+            else:
+                # Default to PulseAudio (the 'Proper Way' for HAOS and its audio bridge).
+                cmd += ["-f", "pulse", usb_device or "default"]
+        return await _run_audio_cmd(cmd, logger)
+
+    logger.error(
+        "No suitable audio player found (tried ffplay, afplay, ffmpeg). "
+        "Please ensure 'ffmpeg:' is enabled in your HA configuration "
+        "or install ffmpeg on your host system."
+    )
+
+
+async def _get_media_duration(hass: HomeAssistant, media_id: str, logger, local_path: str | None = None) -> tuple[float | None, str]:
+    """Probe media duration, downloading to a temp file if it's a remote URL.
+    
+    Returns:
+        tuple (duration_in_seconds, final_media_path)
+    """
+    if local_path:
+        # If the media source already gave us a local path, use it directly
+        final_media_path = local_path
+        logger.debug("Using provided local path for duration probe: %s", local_path)
+    else:
+        final_media_path = media_id
+    
+    # Check if we need to download the remote URL (only if we don't already have a local path)
+    if not local_path and media_id.startswith(("http://", "https://")):
+        try:
+            # Create a deterministic filename in /tmp based on the URL hash
+            url_hash = hashlib.md5(media_id.encode()).hexdigest()
+            temp_path = f"/tmp/dcm1_paging_{url_hash}.mp3"
+            
+            # Download the file
+            logger.debug("Downloading remote paging audio: %s", media_id)
+            session = async_get_clientsession(hass)
+            async with session.get(media_id, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.read()
+                    def write_file():
+                        with open(temp_path, "wb") as f:
+                            f.write(data)
+                    await hass.async_add_executor_job(write_file)
+                    final_media_path = temp_path
+                else:
+                    logger.warning("Failed to download paging audio, status: %s", response.status)
+        except Exception as exc: # noqa: BLE001
+            logger.warning("Error downloading paging audio: %s", exc)
+
+    # Now probe the final_media_path (either original local path or new temp path)
+    ffprobe_path = (
+        shutil.which("ffprobe")
+        or shutil.which("/opt/homebrew/bin/ffprobe")
+        or shutil.which("/usr/bin/ffprobe")
+    )
+    
+    duration = None
+    if ffprobe_path:
+        cmd = [
+            ffprobe_path,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            final_media_path,
+        ]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0 and stdout:
+                duration_str = stdout.decode().strip()
+                try:
+                    duration = float(duration_str)
+                except ValueError:
+                    logger.warning("Invalid duration from ffprobe: %s", duration_str)
+            elif stderr:
+                logger.debug("ffprobe error: %s", stderr.decode().strip())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to probe duration with ffprobe: %s", exc)
+    else:
+        logger.debug("ffprobe not found, cannot probe duration")
+
+    return duration, final_media_path
+
+
+async def _run_audio_cmd(cmd: list[str], logger) -> None:
+    """Helper to execute the process and log errors."""
+    logger.info("Paging audio: running %s", " ".join(cmd))
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0 and stderr:
+            logger.warning(
+                "Paging audio player exited with code %s: %s",
+                proc.returncode,
+                stderr.decode(errors="replace").strip(),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to play paging audio: %s", exc)
 
 
 async def async_setup_entry(
@@ -45,7 +237,10 @@ async def async_setup_entry(
     use_zone_labels = config_entry.data.get(CONF_USE_ZONE_LABELS, True)
     entity_name_suffix = config_entry.data.get(CONF_ENTITY_NAME_SUFFIX, "")
     use_optimistic_volume = config_entry.data.get(CONF_OPTIMISTIC_VOLUME, True)
-    volume_db_range = config_entry.data.get("volume_db_range", 40)  # dB range for slider (40 = practical, 61 = full)
+    volume_db_range = config_entry.data.get(CONF_VOLUME_DB_RANGE, 40)  # dB range for slider (40 = practical, 61 = full)
+    paging_post_delay_ms = config_entry.data.get(CONF_PAGING_POST_DELAY_MS, DEFAULT_PAGING_POST_DELAY_MS)
+    paging_usb_device = config_entry.data.get(CONF_PAGING_USB_DEVICE, None)
+    paging_stage_before_play = config_entry.data.get(CONF_PAGING_STAGE_BEFORE_PLAY, False)
     
     # Query all mixer state (zones, sources, groups, line inputs, volume, status)
     #_LOGGER.info("Querying all mixer state from device")
@@ -72,6 +267,10 @@ async def async_setup_entry(
     zone_entities: dict[int, MixerZone] = {}
     group_entities: dict[int, MixerGroup] = {}
 
+    # Create the paging bus entity first so it can be passed to zones/groups.
+    paging_flags: dict[int, bool] = hass.data[DOMAIN][f"{config_entry.entry_id}_paging_flags"]
+    paging_bus = PagingBus(mixer, paging_flags, config_entry.entry_id, use_zone_labels, paging_post_delay_ms, paging_usb_device, paging_stage_before_play)
+
     # Setup the individual zone entities
     for zone_id, zone in mixer.zones_by_id.items():
         _LOGGER.debug("Setting up zone entity for zone_id: %s, %s", zone.id, zone.name)
@@ -79,7 +278,7 @@ async def async_setup_entry(
         enabled_inputs = mixer.get_zone_enabled_line_inputs(zone_id)
         _LOGGER.info("DEBUG: Zone %s enabled_inputs returned: %s", zone_id, enabled_inputs)
         _LOGGER.info("DEBUG: Zone %s type: %s, bool: %s, len: %s", zone_id, type(enabled_inputs), bool(enabled_inputs), len(enabled_inputs) if enabled_inputs else 0)
-        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range)
+        mixer_zone = MixerZone(zone.id, zone.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_post_delay_ms, paging_usb_device, paging_bus_entity=paging_bus)
         zone_entities[zone.id] = mixer_zone
         entities.append(mixer_zone)
 
@@ -93,14 +292,16 @@ async def async_setup_entry(
             enabled_inputs = mixer.get_group_enabled_line_inputs(group_id)
             _LOGGER.info("DEBUG: Group %s enabled_inputs returned: %s", group_id, enabled_inputs)
             _LOGGER.info("DEBUG: Type of enabled_inputs: %s, bool check: %s", type(enabled_inputs), bool(enabled_inputs))
-            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range)
+            mixer_group = MixerGroup(group.id, group.name, mixer, use_zone_labels, entity_name_suffix, enabled_inputs, use_optimistic_volume, volume_db_range, paging_post_delay_ms, paging_usb_device, paging_bus_entity=paging_bus)
             group_entities[group.id] = mixer_group
             entities.append(mixer_group)
         else:
             _LOGGER.info("Skipping DISABLED group: group_id: %s, %s", group.id, group.name)
 
+    entities.append(paging_bus)
+
     # All entities created with current mixer state. Register listener for updates.
-    mixer_listener = MixerListener(zone_entities, group_entities)
+    mixer_listener = MixerListener(zone_entities, group_entities, paging_bus)
     mixer.register_listener(mixer_listener)
     
     _LOGGER.info("Total entities to add: %s", len(entities))
@@ -113,9 +314,11 @@ class MixerListener(MixerResponseListener):
         self,
         zone_entities: dict[int, "MixerZone"] | None = None,
         group_entities: dict[int, "MixerGroup"] | None = None,
+        paging_bus_entity: "PagingBus | None" = None,
     ) -> None:
         self.mixer_zone_entities: dict[int, MixerZone] = zone_entities or {}
         self.mixer_group_entities: dict[int, MixerGroup] = group_entities or {}
+        self._paging_bus_entity: PagingBus | None = paging_bus_entity
 
     def connected(self):
         _LOGGER.warning("DCM1 Mixer reconnected")
@@ -125,6 +328,8 @@ class MixerListener(MixerResponseListener):
         for entity in self.mixer_group_entities.values():
             _LOGGER.debug("Restoring group %s to available", entity)
             entity.set_available(True)
+        if self._paging_bus_entity:
+            self._paging_bus_entity.set_available(True)
 
     def disconnected(self):
         _LOGGER.warning("DCM1 Mixer disconnected")
@@ -134,6 +339,8 @@ class MixerListener(MixerResponseListener):
         for entity in self.mixer_group_entities.values():
             _LOGGER.debug("Updating group %s to unavailable", entity)
             entity.set_available(False)
+        if self._paging_bus_entity:
+            self._paging_bus_entity.set_available(False)
 
     def source_label_received(self, source_id: int, label: str):
         _LOGGER.debug("Source label received for Source ID %s: %s", source_id, label)
@@ -195,6 +402,14 @@ class MixerListener(MixerResponseListener):
         if entity:
             entity.maybe_update_volume_level_from_device(level)
 
+    def paging_status_received(self, mask: str):
+        for entity in self.mixer_zone_entities.values():
+            entity.schedule_update_ha_state()
+        for entity in self.mixer_group_entities.values():
+            entity.schedule_update_ha_state()
+        if self._paging_bus_entity:
+            self._paging_bus_entity.on_paging_status_changed(mask)
+
     def error(self, error_message: str):
         pass  # Not required for us
 
@@ -210,10 +425,12 @@ class MixerZone(MediaPlayerEntity):
         | MediaPlayerEntityFeature.VOLUME_SET
         | MediaPlayerEntityFeature.VOLUME_STEP
         | MediaPlayerEntityFeature.VOLUME_MUTE
+        | MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.BROWSE_MEDIA
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40) -> None:
+    def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None) -> None:
         """Init."""
         self.zone_id = zone_id
         self._mixer: DCM1Mixer = mixer
@@ -221,7 +438,10 @@ class MixerZone(MediaPlayerEntity):
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
         self._use_optimistic_volume = use_optimistic_volume
-        self._volume_db_range = max(1, min(61, volume_db_range))  # Clamp to valid range
+        self._volume_db_range = int(max(1, min(61, volume_db_range)))  # Clamp to valid range
+        self._paging_post_delay_ms: int = paging_post_delay_ms
+        self._paging_usb_device: str | None = paging_usb_device
+        self._paging_bus_entity: PagingBus | None = paging_bus_entity
         
         _LOGGER.debug(f"Zone {zone_id} enabled_line_inputs: {self._enabled_line_inputs}")
         
@@ -235,7 +455,7 @@ class MixerZone(MediaPlayerEntity):
         self._raw_volume_level = None  # Last raw device volume level (0-62)
         self._pre_mute_volume = None  # HA volume level before muting (0.0-1.0)
         self._pre_mute_raw_volume = None  # Raw device level before muting (0-62)
-        
+
         # Try to get initial source state
         initial_source_id = mixer.get_zone_source(zone_id)
         if initial_source_id and initial_source_id in mixer.sources_by_id:
@@ -499,6 +719,10 @@ class MixerZone(MediaPlayerEntity):
             attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
         if self._volume_level is not None:
             attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
+        mask = getattr(self._mixer, "paging_status", None)
+        attrs["raw_paging_status"] = mask
+        attrs["paging_bus_busy"] = bool(mask and "X" in mask)
+        attrs["paging_open"] = bool(mask and len(mask) >= self.zone_id and mask[self.zone_id - 1] == "X")
         return attrs
 
     def mute_volume(self, mute: bool) -> None:
@@ -522,6 +746,21 @@ class MixerZone(MediaPlayerEntity):
             else:
                 level = self._volume_db_range // 2  # Default to mid-range if slider at 0% or unknown
             self._mixer.set_zone_volume(zone_id=self.zone_id, level=level)
+
+    async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
+        """Implement the media browsing interface."""
+        return await media_source_browse_media(self.hass, media_content_id)
+
+    async def async_play_media(self, media_type: str, media_id: str, **kwargs) -> None:
+        """Delegate paging to PagingBus using a single-zone mask."""
+        if not self._paging_bus_entity:
+            _LOGGER.error("Zone %s: no paging bus entity — cannot page", self.zone_id)
+            return
+        mask = ["O"] * 8
+        mask[self.zone_id - 1] = "X"
+        source_name = self._zone_name if self._use_zone_labels and self._zone_name else f"Zone {self.zone_id}"
+        await self._paging_bus_entity.async_page_with_mask(media_type, media_id, "".join(mask), source_name)
+
 class MixerGroup(MediaPlayerEntity):
     """Represents an enabled Group of the DCM1 Mixer."""
 
@@ -534,10 +773,12 @@ class MixerGroup(MediaPlayerEntity):
         | MediaPlayerEntityFeature.VOLUME_SET
         | MediaPlayerEntityFeature.VOLUME_STEP
         | MediaPlayerEntityFeature.VOLUME_MUTE
+        | MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.BROWSE_MEDIA
     )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
 
-    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40) -> None:
+    def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None) -> None:
         """Init."""
         self.group_id = group_id
         self._mixer: DCM1Mixer = mixer
@@ -545,7 +786,10 @@ class MixerGroup(MediaPlayerEntity):
         self._entity_name_suffix = entity_name_suffix
         self._enabled_line_inputs: dict[int, bool] = enabled_line_inputs or {}
         self._use_optimistic_volume = use_optimistic_volume
-        self._volume_db_range = max(1, min(61, volume_db_range))  # Clamp to valid range
+        self._volume_db_range = int(max(1, min(61, volume_db_range)))  # Clamp to valid range
+        self._paging_post_delay_ms: int = paging_post_delay_ms
+        self._paging_usb_device: str | None = paging_usb_device
+        self._paging_bus_entity: PagingBus | None = paging_bus_entity
         
         _LOGGER.debug(f"Group {group_id} enabled_line_inputs: {self._enabled_line_inputs}")
         
@@ -817,6 +1061,26 @@ class MixerGroup(MediaPlayerEntity):
             new_volume = max(0.0, self._volume_level - 0.05)  # 5% decrement
             self.set_volume_level(new_volume)
 
+    @property
+    def extra_state_attributes(self):
+        """Return integration-specific debugging attributes."""
+        attrs = {}
+        if self._raw_volume_level is not None:
+            attrs["dcm1_raw_volume_level"] = self._raw_volume_level
+        if self._pending_volume is not None:
+            attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
+        if self._volume_level is not None:
+            attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
+        mask = getattr(self._mixer, "paging_status", None)
+        attrs["raw_paging_status"] = mask
+        attrs["paging_bus_busy"] = bool(mask and "X" in mask)
+        group = self._mixer.groups_by_id.get(self.group_id)
+        zone_ids = group.zones if group else []
+        attrs["paging_open"] = bool(mask and any(
+            1 <= z <= len(mask) and mask[z - 1] == "X" for z in zone_ids
+        ))
+        return attrs
+
     def mute_volume(self, mute: bool) -> None:
         """Mute or unmute the volume."""
         if mute:
@@ -838,3 +1102,328 @@ class MixerGroup(MediaPlayerEntity):
             else:
                 level = self._volume_db_range // 2  # Default to mid-range if slider at 0% or unknown
             self._mixer.set_group_volume(group_id=self.group_id, level=level)
+
+    async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
+        """Implement the media browsing interface."""
+        return await media_source_browse_media(self.hass, media_content_id)
+
+    async def async_play_media(self, media_type: str, media_id: str, **kwargs) -> None:
+        """Delegate paging to PagingBus using a mask derived from this group's zones."""
+        if not self._paging_bus_entity:
+            _LOGGER.error("Group %s: no paging bus entity — cannot page", self.group_id)
+            return
+        group = self._mixer.groups_by_id.get(self.group_id)
+        zone_ids = group.zones if group else []
+        mask = ["O"] * 8
+        for z in zone_ids:
+            if 1 <= z <= 8:
+                mask[z - 1] = "X"
+        source_name = self._group_name if self._use_zone_labels and self._group_name else f"Group {self.group_id}"
+        await self._paging_bus_entity.async_page_with_mask(media_type, media_id, "".join(mask), source_name)
+
+
+class PagingBus(MediaPlayerEntity):
+    """Represents the DCM1 paging bus.
+
+    State is PLAYING whenever the paging bus is busy (any zone in active paging),
+    otherwise IDLE.  When paging is triggered via this integration the original
+    media identifier and source zone/group name are tracked; when triggered by
+    external hardware (physical mic, SD card, etc.) the title shows "Unknown".
+
+    The 'source' attribute is a read-only display label showing which zones are
+    currently flagged use_for_next_bus_page, e.g. 'Zone 1, Zone 3'.  Zone
+    inclusion is controlled by PagingZoneSwitch entities on each zone's device card.
+    """
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_name = None
+    _attr_device_class = MediaPlayerDeviceClass.SPEAKER
+
+    def __init__(
+        self,
+        mixer: DCM1Mixer,
+        paging_flags: dict[int, bool],
+        entry_id: str,
+        use_zone_labels: bool,
+        paging_post_delay_ms: int = _PAGING_POST_DELAY_MS_DEFAULT,
+        paging_usb_device: str | None = None,
+        paging_stage_before_play: bool = False,
+    ) -> None:
+        """Init."""
+        self._mixer: DCM1Mixer = mixer
+        self._paging_flags: dict[int, bool] = paging_flags
+        self._entry_id: str = entry_id
+        self._use_zone_labels: bool = use_zone_labels
+        self._paging_post_delay_ms: int = paging_post_delay_ms
+        self._paging_usb_device: str | None = paging_usb_device
+        self._paging_stage_before_play: bool = paging_stage_before_play
+        self._our_page_mask: str | None = None  # The mask we requested; None when no page in progress
+        self._staged_media_id: str | None = None
+        self._staged_media_type: str | None = None
+        unique_base = f"dcm1_{mixer._hostname.replace('.', '_')}"
+        self._attr_unique_id = f"{unique_base}_paging_bus"
+        self._media_title: str | None = None
+        self._media_artist: str | None = None
+        self._media_content_type: str | None = None
+        self._attr_state = MediaPlayerState.IDLE
+        # Build feature set — transport controls only added in staging mode
+        features = (
+            MediaPlayerEntityFeature.PLAY_MEDIA
+            | MediaPlayerEntityFeature.SELECT_SOURCE
+            | MediaPlayerEntityFeature.BROWSE_MEDIA
+        )
+        if paging_stage_before_play:
+            features |= MediaPlayerEntityFeature.PLAY | MediaPlayerEntityFeature.STOP
+        self._attr_supported_features = features
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to flag changes so the source display updates when switches are toggled."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_PAGING_FLAGS_CHANGED.format(self._entry_id),
+                self.schedule_update_ha_state,
+            )
+        )
+
+    # --- HA entity properties ---
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._attr_unique_id)},
+            name="Paging Bus",
+            manufacturer="Cloud Electronics",
+            model="DCM1 Zone Mixer",
+        )
+
+    @property
+    def media_title(self) -> str | None:
+        return self._media_title
+
+    @property
+    def media_artist(self) -> str | None:
+        return self._media_artist
+
+    @property
+    def media_content_type(self) -> str | None:
+        return self._media_content_type
+
+    @property
+    def source(self) -> str | None:
+        """Display which zones are currently included in the next page."""
+        names = []
+        for zone_id in sorted(self._paging_flags):
+            if self._paging_flags.get(zone_id, True):
+                zone = self._mixer.zones_by_id.get(zone_id)
+                name = zone.name if (zone and self._use_zone_labels and zone.name) else f"Zone {zone_id}"
+                names.append(name)
+        return ", ".join(names) if names else "(none)"
+
+    @property
+    def source_list(self) -> list[str]:
+        """Return the current destination as the sole list item."""
+        current = self.source
+        return [current] if current else []
+
+    def select_source(self, source: str) -> None:
+        """Zone selection is managed via Page Ready switches; this is intentionally a no-op."""
+
+    async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
+        """Implement the media browsing interface."""
+        return await media_source_browse_media(self.hass, media_content_id)
+
+    @property
+    def extra_state_attributes(self):
+        """Return paging bus status attributes."""
+        mask = getattr(self._mixer, "paging_status", None)
+        busy = bool(mask and "X" in mask)
+        return {
+            "raw_paging_status": mask,
+            "paging_bus_busy": busy,
+            "paging_open": busy,
+        }
+
+    # --- Public methods ---
+
+    def set_available(self, available: bool) -> None:
+        """Set availability following mixer connect/disconnect."""
+        self._attr_available = available
+        self.schedule_update_ha_state()
+
+    def on_paging_status_changed(self, mask: str) -> None:
+        """Called from MixerListener.paging_status_received when mask changes."""
+        busy = bool(mask and "X" in mask)
+        if busy:
+            self._attr_state = MediaPlayerState.PLAYING
+            if mask != self._our_page_mask:
+                # Mask doesn't match what we requested — external hardware (physical mic, SD card, etc.)
+                self._media_title = "Unknown"
+                self._media_artist = "External"
+                self._media_content_type = None
+            self.schedule_update_ha_state()
+        else:
+            self._clear_playing_state()
+
+    async def async_play_media(self, media_type: str, media_id: str, **kwargs) -> None:
+        """Stage or immediately page depending on configuration."""
+        if self._paging_stage_before_play:
+            # Staging mode: store the media and wait for the user to press Play
+            self._staged_media_id = media_id
+            self._staged_media_type = media_type
+            # TODO: Look at calling clear_playing_state() here
+            # instead of duplicate lines of code.
+            title = media_id.split("/")[-1] or media_id
+            self._media_title = title
+            self._media_artist = "Staged — press ▶ to page"
+            self._media_content_type = media_type
+            self._attr_state = MediaPlayerState.PAUSED
+            self.schedule_update_ha_state()
+            return
+        # Immediate mode: page straight away
+        mask = self._build_paging_mask()
+        if "X" not in mask:
+            _LOGGER.warning("Paging bus: no zones selected (all use_for_next_bus_page=False), aborting")
+            return
+        await self.async_page_with_mask(media_type, media_id, mask, "Paging bus")
+
+    async def async_media_play(self) -> None:
+        """Execute the staged page (only used in staging mode)."""
+        if self._staged_media_id is None:
+            return
+        media_id = self._staged_media_id
+        media_type = self._staged_media_type or ""
+        mask = self._build_paging_mask()
+        if "X" not in mask:
+            _LOGGER.warning("Paging bus: no zones selected, discarding staged page")
+            self._staged_media_id = None
+            self._staged_media_type = None
+            self._clear_playing_state()
+            return
+        await self.async_page_with_mask(media_type, media_id, mask, "Paging bus")
+        # _clear_playing_state() in the finally block already restored PAUSED because
+        # _staged_media_id is still set — nothing to do here.
+
+    async def async_media_stop(self) -> None:
+        """Discard staged media (only used in staging mode)."""
+        self._clear_playing_state(stop=True)
+
+    async def async_page_with_mask(
+        self,
+        media_type: str,
+        media_id: str,
+        mask: str,
+        source_name: str,
+    ) -> None:
+        """Orchestrate a full paging sequence to the given XO mask.
+
+        This is the single canonical implementation.  MixerZone and MixerGroup
+        async_play_media each compute an appropriate mask and call here.
+
+        Args:
+            media_type:  Passed through to _prepare_page.
+            media_id:    Local file path, relative URL, or media-source:// URI.
+            mask:        8-char XO string, e.g. 'XOOOOOOO' = zone 1 only.
+            source_name: Display name shown as the artist on the paging bus card.
+        """
+        _LOGGER.info("Paging bus: starting page to %s (%s) for %s", mask, source_name, media_id)
+        paging_start_time = self.hass.loop.time()
+
+        # Resolve media-source:// URIs (e.g. TTS) to real URLs
+        local_path_hint = None
+        if is_media_source_id(media_id):
+            sourced_media = await async_resolve_media(self.hass, media_id, self.entity_id)
+            media_id = sourced_media.url
+            local_path_hint = getattr(sourced_media, "path", None)
+            if local_path_hint:
+                local_path_hint = str(local_path_hint)
+
+        # Resolve relative URLs to absolute
+        if media_id.startswith("/"):
+            base_url = get_url(self.hass, allow_internal=True)
+            media_id = f"{base_url}{media_id}"
+
+        # Probe duration (and download remote file if needed)
+        duration, local_path = await _get_media_duration(
+            self.hass, media_id, _LOGGER, local_path=local_path_hint
+        )
+        if duration:
+            _LOGGER.info("Paging bus: media duration %.1fs", duration)
+
+        self._prepare_page(media_id, media_type, source_name, mask)
+        try:
+            await self._mixer.start_paging_with_mask(mask)
+
+            start_playback_time = self.hass.loop.time()
+            await _play_paging_audio(
+                local_path, self._paging_usb_device, _LOGGER,
+                post_delay_ms=self._paging_post_delay_ms,
+            )
+
+            if duration:
+                elapsed = self.hass.loop.time() - start_playback_time
+                remaining = duration - elapsed
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+        finally:
+            await self._mixer.stop_all_paging()
+            self._clear_playing_state()
+            if local_path.startswith("/tmp/dcm1_paging_") and os.path.exists(local_path):
+                try:
+                    await self.hass.async_add_executor_job(os.remove, local_path)
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.warning("Failed to remove temp file %s: %s", local_path, exc)
+
+        _LOGGER.info("Paging bus: page complete in %.1fs", self.hass.loop.time() - paging_start_time)
+
+    # --- Private helpers ---
+
+    def _build_paging_mask(self) -> str:
+        """Build an 8-char XO mask from the current paging_flags state."""
+        return "".join("X" if self._paging_flags.get(k, False) else "O" for k in range(1, 9))
+
+    def _prepare_page(self, title: str, content_type: str, source_name: str, mask: str) -> None:
+        """Record media metadata and store the expected paging mask before paging starts.
+
+        Stores the requested zone mask in _our_page_mask so that when the hardware busy
+        callback fires, on_paging_status_changed can compare the reported mask against it.
+        If they match, the page is ours and we keep our media metadata.  If they differ,
+        some external source opened different zones and we show "Unknown/External" instead.
+
+        There is still a narrow race: an external page could open the exact same zone
+        combination in the gap between this call and the hardware confirming busy, which
+        would be misidentified as ours.  The worst outcome is a cosmetic title mismatch
+        that self-corrects when the page ends.
+
+        State transitions to PLAYING only when the hardware confirms the bus is busy
+        via on_paging_status_changed; this method intentionally does not touch _attr_state.
+        """
+        self._our_page_mask = mask
+        self._media_title = title
+        self._media_content_type = content_type
+        self._media_artist = source_name
+        self.schedule_update_ha_state()
+
+    def _clear_playing_state(self, stop: bool = False) -> None:
+        """Called whenever playback ends: finally block, async_media_stop, or not-busy callback.
+
+        If stop=True (stop button pressed), always transitions to IDLE and discards staged media.
+        Otherwise, if staged media is queued, restores PAUSED so the user can replay.
+        """
+        self._our_page_mask = None
+        if stop:
+            self._staged_media_id = None
+            self._staged_media_type = None
+        if self._staged_media_id is not None:
+            title = self._staged_media_id.split("/")[-1] or self._staged_media_id
+            self._media_title = title
+            self._media_artist = "Staged — press ▶ to page"
+            self._media_content_type = self._staged_media_type
+            self._attr_state = MediaPlayerState.PAUSED
+        else:
+            self._media_title = None
+            self._media_content_type = None
+            self._media_artist = None
+            self._attr_state = MediaPlayerState.IDLE
+        self.schedule_update_ha_state()
