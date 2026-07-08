@@ -857,8 +857,16 @@ class MixerZone(MediaPlayerEntity):
             attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
         if self._volume_level is not None:
             attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
+        # default_volume_level: the configured default for the current source (always, regardless of lock)
+        _default_vol = None
+        if self._input_volume_defaults and self._attr_source:
+            _src = self._mixer.sources_by_name.get(self._attr_source)
+            if _src:
+                _res = _find_default_volume(self._input_volume_defaults, self._zone_key, _src.id)
+                if _res is not None:
+                    _default_vol, _ = _res
         attrs["volume_locked"] = self._source_locked_volume is not None
-        attrs["default_volume_level"] = round(self._source_locked_volume, 4) if self._source_locked_volume is not None else None
+        attrs["default_volume_level"] = round(_default_vol, 4) if _default_vol is not None else None
         mask = getattr(self._mixer, "paging_status", None)
         attrs["raw_paging_status"] = mask
         attrs["paging_bus_busy"] = bool(mask and "X" in mask)
@@ -1287,8 +1295,15 @@ class MixerGroup(MediaPlayerEntity):
             attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
         if self._volume_level is not None:
             attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
+        _default_vol = None
+        if self._input_volume_defaults and self._attr_source:
+            _src = self._mixer.sources_by_name.get(self._attr_source)
+            if _src:
+                _res = _find_default_volume(self._input_volume_defaults, self._zone_key, _src.id)
+                if _res is not None:
+                    _default_vol, _ = _res
         attrs["volume_locked"] = self._source_locked_volume is not None
-        attrs["default_volume_level"] = round(self._source_locked_volume, 4) if self._source_locked_volume is not None else None
+        attrs["default_volume_level"] = round(_default_vol, 4) if _default_vol is not None else None
         mask = getattr(self._mixer, "paging_status", None)
         attrs["raw_paging_status"] = mask
         attrs["paging_bus_busy"] = bool(mask and "X" in mask)
