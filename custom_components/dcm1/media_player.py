@@ -790,6 +790,8 @@ class MixerZone(MediaPlayerEntity):
         """Set volume level (0.0 to 1.0)."""
         if self._source_locked_volume is not None and not self._applying_default_volume:
             _LOGGER.debug("Zone %s: volume change blocked by source lock", self.zone_id)
+            self._attr_volume_level = self._source_locked_volume
+            self.schedule_update_ha_state()
             return
         # Convert HA volume (0.0-1.0) to DCM1 level
         # Linear mapping in dB space: level = range * (1 - volume)
@@ -806,7 +808,7 @@ class MixerZone(MediaPlayerEntity):
         self._pending_volume = volume
         self._pending_raw_volume_level = level
         self._pending_volume_rejected_count = 0  # Reset counter on new command
-        if self._use_optimistic_volume or self._applying_default_volume:
+        if self._use_optimistic_volume:
             self._attr_volume_level = volume  # UI shows pending state
             self.schedule_update_ha_state()  # Update UI immediately
         
@@ -1179,6 +1181,8 @@ class MixerGroup(MediaPlayerEntity):
         """Set volume level (0.0 to 1.0)."""
         if self._source_locked_volume is not None and not self._applying_default_volume:
             _LOGGER.debug("Group %s: volume change blocked by source lock", self.group_id)
+            self._attr_volume_level = self._source_locked_volume
+            self.schedule_update_ha_state()
             return
         # Convert HA volume (0.0-1.0) to DCM1 level
         # Linear mapping in dB space: level = range * (1 - volume)
@@ -1195,7 +1199,7 @@ class MixerGroup(MediaPlayerEntity):
         self._pending_volume = volume
         self._pending_raw_volume_level = level
         self._pending_volume_rejected_count = 0  # Reset counter on new command
-        if self._use_optimistic_volume or self._applying_default_volume:
+        if self._use_optimistic_volume:
             self._attr_volume_level = volume  # UI shows pending state
             self.schedule_update_ha_state()  # Update UI immediately
         
