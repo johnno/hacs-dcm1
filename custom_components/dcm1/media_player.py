@@ -622,6 +622,17 @@ class MixerZone(MediaPlayerEntity):
             return
         volume, lock = result
         self._source_locked_volume = volume if lock else None
+        # Compute target raw level to compare against current device level
+        if volume == 0.0:
+            target_raw = self._volume_db_range
+        else:
+            target_raw = round(self._volume_db_range * (1.0 - volume))
+            target_raw = max(0, min(self._volume_db_range, target_raw))
+        # Skip if device is already at the correct default level.
+        # This prevents heartbeat source re-confirmations from re-applying the default
+        # every ~10s and causing attribute churn / card flashing.
+        if self._raw_volume_level == target_raw:
+            return
         _LOGGER.info(
             "Zone %s: applying default volume %.0f%% for source %s%s",
             self.zone_id, volume * 100, source_id, " (locked)" if lock else "",
@@ -1069,6 +1080,13 @@ class MixerGroup(MediaPlayerEntity):
             return
         volume, lock = result
         self._source_locked_volume = volume if lock else None
+        if volume == 0.0:
+            target_raw = self._volume_db_range
+        else:
+            target_raw = round(self._volume_db_range * (1.0 - volume))
+            target_raw = max(0, min(self._volume_db_range, target_raw))
+        if self._raw_volume_level == target_raw:
+            return
         _LOGGER.info(
             "Group %s: applying default volume %.0f%% for source %s%s",
             self.group_id, volume * 100, source_id, " (locked)" if lock else "",
