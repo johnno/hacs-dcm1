@@ -806,7 +806,7 @@ class MixerZone(MediaPlayerEntity):
         self._pending_volume = volume
         self._pending_raw_volume_level = level
         self._pending_volume_rejected_count = 0  # Reset counter on new command
-        if self._use_optimistic_volume:
+        if self._use_optimistic_volume or self._applying_default_volume:
             self._attr_volume_level = volume  # UI shows pending state
             self.schedule_update_ha_state()  # Update UI immediately
         
@@ -1195,7 +1195,7 @@ class MixerGroup(MediaPlayerEntity):
         self._pending_volume = volume
         self._pending_raw_volume_level = level
         self._pending_volume_rejected_count = 0  # Reset counter on new command
-        if self._use_optimistic_volume:
+        if self._use_optimistic_volume or self._applying_default_volume:
             self._attr_volume_level = volume  # UI shows pending state
             self.schedule_update_ha_state()  # Update UI immediately
         
