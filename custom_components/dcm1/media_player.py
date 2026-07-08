@@ -889,23 +889,28 @@ class MixerZone(MediaPlayerEntity):
                         self._source_locked_volume = default_vol
 
         if locked_volume is not None:
-            _LOGGER.debug("Zone %s: lock active — accepting drag then re-applying locked level", self.zone_id)
-            if volume != locked_volume:
-                # Accept the drag value to create a real state diff (event loop tick N).
-                # Without this the final write is a no-op vs the last sent state and the
-                # WebSocket batches it as no-change, leaving the frontend's optimistic
-                # position uncorrected.
-                self._attr_volume_level = volume
-                self.async_write_ha_state()
-                await asyncio.sleep(0)  # Yield so the 0.8 write is processed/sent
-            # Re-apply locked level in the next tick (event loop tick N+1).
-            # Re-using the optimistic path via _applying_default_volume also re-sends
-            # to DCM1 which keeps the hardware in sync.
-            self._applying_default_volume = True
-            try:
-                self.set_volume_level(locked_volume)
-            finally:
-                self._applying_default_volume = False
+            if volume == locked_volume:
+                return  # Slider already at locked position
+            _LOGGER.debug(
+                "Zone %s: lock active — accepting %.0f%% briefly then snapping to %.0f%%",
+                self.zone_id, volume * 100, locked_volume * 100,
+            )
+            # Accept the drag so HA state changes from locked→requested.
+            # This gives the WebSocket subscriber a real diff to send to the client,
+            # clearing the frontend's optimistic view of the drag.
+            self._attr_volume_level = volume
+            self.async_write_ha_state()
+            # Schedule snap-back as a NEW task so it runs in a future event loop
+            # iteration — AFTER the accepted-drag state write has been fully
+            # dispatched to WebSocket clients.
+            zone_locked = locked_volume  # capture for closure
+            async def _snap_back_zone():
+                self._applying_default_volume = True
+                try:
+                    self.set_volume_level(zone_locked)
+                finally:
+                    self._applying_default_volume = False
+            self.hass.async_create_task(_snap_back_zone())
             return
 
         self.set_volume_level(volume)
@@ -1329,16 +1334,22 @@ class MixerGroup(MediaPlayerEntity):
                         self._source_locked_volume = default_vol
 
         if locked_volume is not None:
-            _LOGGER.debug("Group %s: lock active — accepting drag then re-applying locked level", self.group_id)
-            if volume != locked_volume:
-                self._attr_volume_level = volume
-                self.async_write_ha_state()
-                await asyncio.sleep(0)
-            self._applying_default_volume = True
-            try:
-                self.set_volume_level(locked_volume)
-            finally:
-                self._applying_default_volume = False
+            if volume == locked_volume:
+                return
+            _LOGGER.debug(
+                "Group %s: lock active — accepting %.0f%% briefly then snapping to %.0f%%",
+                self.group_id, volume * 100, locked_volume * 100,
+            )
+            self._attr_volume_level = volume
+            self.async_write_ha_state()
+            group_locked = locked_volume
+            async def _snap_back_group():
+                self._applying_default_volume = True
+                try:
+                    self.set_volume_level(group_locked)
+                finally:
+                    self._applying_default_volume = False
+            self.hass.async_create_task(_snap_back_group())
             return
 
         self.set_volume_level(volume)
