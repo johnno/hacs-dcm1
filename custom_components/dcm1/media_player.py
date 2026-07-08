@@ -498,23 +498,15 @@ class MixerZone(MediaPlayerEntity):
     _attr_should_poll = False
     _attr_name = None
 
+    _attr_supported_features = (
+        MediaPlayerEntityFeature.SELECT_SOURCE
+        | MediaPlayerEntityFeature.VOLUME_SET
+        | MediaPlayerEntityFeature.VOLUME_STEP
+        | MediaPlayerEntityFeature.VOLUME_MUTE
+        | MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.BROWSE_MEDIA
+    )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
-
-    @property
-    def supported_features(self) -> MediaPlayerEntityFeature:
-        """Return supported features. Volume controls are removed when source is locked."""
-        features = (
-            MediaPlayerEntityFeature.SELECT_SOURCE
-            | MediaPlayerEntityFeature.VOLUME_MUTE
-            | MediaPlayerEntityFeature.PLAY_MEDIA
-            | MediaPlayerEntityFeature.BROWSE_MEDIA
-        )
-        if self._source_locked_volume is None:
-            features |= (
-                MediaPlayerEntityFeature.VOLUME_SET
-                | MediaPlayerEntityFeature.VOLUME_STEP
-            )
-        return features
 
     def __init__(self, zone_id, zone_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None, input_volume_defaults=None) -> None:
         """Init."""
@@ -897,7 +889,15 @@ class MixerZone(MediaPlayerEntity):
                         self._source_locked_volume = default_vol
 
         if locked_volume is not None:
-            _LOGGER.debug("Zone %s: volume change blocked by source lock", self.zone_id)
+            _LOGGER.debug("Zone %s: snapping slider back to locked level", self.zone_id)
+            # Write the requested value first to create a real state diff, then
+            # immediately overwrite with the locked value. Two state_changed events
+            # fire; the frontend receives both and settles on the locked position.
+            if volume != locked_volume:
+                self._attr_volume_level = volume
+                self.async_write_ha_state()
+            self._attr_volume_level = locked_volume
+            self.async_write_ha_state()
             return
 
         self.set_volume_level(volume)
@@ -923,23 +923,15 @@ class MixerGroup(MediaPlayerEntity):
     _attr_should_poll = False
     _attr_name = None
 
+    _attr_supported_features = (
+        MediaPlayerEntityFeature.SELECT_SOURCE
+        | MediaPlayerEntityFeature.VOLUME_SET
+        | MediaPlayerEntityFeature.VOLUME_STEP
+        | MediaPlayerEntityFeature.VOLUME_MUTE
+        | MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.BROWSE_MEDIA
+    )
     _attr_device_class = MediaPlayerDeviceClass.RECEIVER
-
-    @property
-    def supported_features(self) -> MediaPlayerEntityFeature:
-        """Return supported features. Volume controls are removed when source is locked."""
-        features = (
-            MediaPlayerEntityFeature.SELECT_SOURCE
-            | MediaPlayerEntityFeature.VOLUME_MUTE
-            | MediaPlayerEntityFeature.PLAY_MEDIA
-            | MediaPlayerEntityFeature.BROWSE_MEDIA
-        )
-        if self._source_locked_volume is None:
-            features |= (
-                MediaPlayerEntityFeature.VOLUME_SET
-                | MediaPlayerEntityFeature.VOLUME_STEP
-            )
-        return features
 
     def __init__(self, group_id, group_name, mixer, use_zone_labels=True, entity_name_suffix="", enabled_line_inputs=None, use_optimistic_volume=True, volume_db_range=40, paging_post_delay_ms=_PAGING_POST_DELAY_MS_DEFAULT, paging_usb_device=None, paging_bus_entity=None, input_volume_defaults=None) -> None:
         """Init."""
@@ -1329,7 +1321,12 @@ class MixerGroup(MediaPlayerEntity):
                         self._source_locked_volume = default_vol
 
         if locked_volume is not None:
-            _LOGGER.debug("Group %s: volume change blocked by source lock", self.group_id)
+            _LOGGER.debug("Group %s: snapping slider back to locked level", self.group_id)
+            if volume != locked_volume:
+                self._attr_volume_level = volume
+                self.async_write_ha_state()
+            self._attr_volume_level = locked_volume
+            self.async_write_ha_state()
             return
 
         self.set_volume_level(volume)
