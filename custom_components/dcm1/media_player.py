@@ -889,15 +889,23 @@ class MixerZone(MediaPlayerEntity):
                         self._source_locked_volume = default_vol
 
         if locked_volume is not None:
-            _LOGGER.debug("Zone %s: snapping slider back to locked level", self.zone_id)
-            # Write the requested value first to create a real state diff, then
-            # immediately overwrite with the locked value. Two state_changed events
-            # fire; the frontend receives both and settles on the locked position.
+            _LOGGER.debug("Zone %s: lock active — accepting drag then re-applying locked level", self.zone_id)
             if volume != locked_volume:
+                # Accept the drag value to create a real state diff (event loop tick N).
+                # Without this the final write is a no-op vs the last sent state and the
+                # WebSocket batches it as no-change, leaving the frontend's optimistic
+                # position uncorrected.
                 self._attr_volume_level = volume
                 self.async_write_ha_state()
-            self._attr_volume_level = locked_volume
-            self.async_write_ha_state()
+                await asyncio.sleep(0)  # Yield so the 0.8 write is processed/sent
+            # Re-apply locked level in the next tick (event loop tick N+1).
+            # Re-using the optimistic path via _applying_default_volume also re-sends
+            # to DCM1 which keeps the hardware in sync.
+            self._applying_default_volume = True
+            try:
+                self.set_volume_level(locked_volume)
+            finally:
+                self._applying_default_volume = False
             return
 
         self.set_volume_level(volume)
@@ -1321,12 +1329,16 @@ class MixerGroup(MediaPlayerEntity):
                         self._source_locked_volume = default_vol
 
         if locked_volume is not None:
-            _LOGGER.debug("Group %s: snapping slider back to locked level", self.group_id)
+            _LOGGER.debug("Group %s: lock active — accepting drag then re-applying locked level", self.group_id)
             if volume != locked_volume:
                 self._attr_volume_level = volume
                 self.async_write_ha_state()
-            self._attr_volume_level = locked_volume
-            self.async_write_ha_state()
+                await asyncio.sleep(0)
+            self._applying_default_volume = True
+            try:
+                self.set_volume_level(locked_volume)
+            finally:
+                self._applying_default_volume = False
             return
 
         self.set_volume_level(volume)
