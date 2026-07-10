@@ -22,6 +22,7 @@ from .const import (
     CONF_PAGING_POST_DELAY_MS,
     CONF_PAGING_STAGE_BEFORE_PLAY,
     CONF_PAGING_USB_DEVICE,
+    CONF_STRIP_SOURCE_NAME_SPACES,
     CONF_USE_ZONE_LABELS,
     CONF_VOLUME_DB_RANGE,
     DEFAULT_PAGING_POST_DELAY_MS,
@@ -159,6 +160,10 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Optional(
                         CONF_PAGING_STAGE_BEFORE_PLAY,
                         default=config_entry.data.get(CONF_PAGING_STAGE_BEFORE_PLAY, False),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_STRIP_SOURCE_NAME_SPACES,
+                        default=config_entry.data.get(CONF_STRIP_SOURCE_NAME_SPACES, False),
                     ): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_INPUT_VOLUME_DEFAULTS,

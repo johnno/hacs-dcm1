@@ -26,6 +26,7 @@
                     "paging_post_delay_ms": "Paging Post-Delay (ms)",
                     "paging_usb_device": "USB DI Device Name",
                     "paging_stage_before_play": "Stage paging before playing",
+                    "strip_source_name_spaces": "Strip trailing spaces from source names",
                     "input_volume_defaults": "Input Volume Defaults"
                 }
             }

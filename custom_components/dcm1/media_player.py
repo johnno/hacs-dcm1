@@ -42,6 +42,7 @@ from .const import (
     CONF_PAGING_POST_DELAY_MS,
     CONF_PAGING_STAGE_BEFORE_PLAY,
     CONF_PAGING_USB_DEVICE,
+    CONF_STRIP_SOURCE_NAME_SPACES,
     CONF_USE_ZONE_LABELS,
     CONF_VOLUME_DB_RANGE,
     DEFAULT_PAGING_POST_DELAY_MS,
@@ -331,6 +332,7 @@ async def async_setup_entry(
     paging_post_delay_ms = config_entry.data.get(CONF_PAGING_POST_DELAY_MS, DEFAULT_PAGING_POST_DELAY_MS)
     paging_usb_device = config_entry.data.get(CONF_PAGING_USB_DEVICE, None)
     paging_stage_before_play = config_entry.data.get(CONF_PAGING_STAGE_BEFORE_PLAY, False)
+    strip_source_names = config_entry.data.get(CONF_STRIP_SOURCE_NAME_SPACES, False)
     input_volume_defaults = _parse_input_volume_defaults(
         config_entry.data.get(CONF_INPUT_VOLUME_DEFAULTS, "")
     )
@@ -344,6 +346,17 @@ async def async_setup_entry(
     sources_loaded = await mixer.wait_for_source_labels(timeout=7.0)
     if not sources_loaded:
         _LOGGER.warning("Timeout waiting for source labels - some names may not be correct")
+    
+    # Strip trailing spaces from source names if configured (DCM1 firmware bug workaround)
+    if strip_source_names:
+        for source in list(mixer.sources_by_id.values()):
+            stripped = source.name.rstrip()
+            if stripped != source.name:
+                old_name = source.name
+                source._name = stripped
+                mixer.sources_by_name.pop(old_name, None)
+                mixer.sources_by_name[stripped] = source
+                _LOGGER.debug("Stripped source name: %r → %r", old_name, stripped)
     
     _LOGGER.info("Waiting for zone data (labels, sources, line inputs, volume)...")
     zones_loaded = await mixer.wait_for_zone_data(timeout=12.0)
@@ -394,7 +407,7 @@ async def async_setup_entry(
     entities.append(paging_bus)
 
     # All entities created with current mixer state. Register listener for updates.
-    mixer_listener = MixerListener(zone_entities, group_entities, paging_bus)
+    mixer_listener = MixerListener(zone_entities, group_entities, paging_bus, mixer=mixer, strip_source_names=strip_source_names)
     mixer.register_listener(mixer_listener)
     
     _LOGGER.info("Total entities to add: %s", len(entities))
@@ -408,10 +421,14 @@ class MixerListener(MixerResponseListener):
         zone_entities: dict[int, "MixerZone"] | None = None,
         group_entities: dict[int, "MixerGroup"] | None = None,
         paging_bus_entity: "PagingBus | None" = None,
+        mixer: "DCM1Mixer | None" = None,
+        strip_source_names: bool = False,
     ) -> None:
         self.mixer_zone_entities: dict[int, MixerZone] = zone_entities or {}
         self.mixer_group_entities: dict[int, MixerGroup] = group_entities or {}
         self._paging_bus_entity: PagingBus | None = paging_bus_entity
+        self._mixer = mixer
+        self._strip_source_names = strip_source_names
 
     def connected(self):
         _LOGGER.warning("DCM1 Mixer reconnected")
@@ -437,6 +454,18 @@ class MixerListener(MixerResponseListener):
 
     def source_label_received(self, source_id: int, label: str):
         _LOGGER.debug("Source label received for Source ID %s: %s", source_id, label)
+        # Strip trailing spaces at the pydcm1 data level so all downstream
+        # source list builds and name lookups see the clean name automatically.
+        if self._strip_source_names and self._mixer:
+            source = self._mixer.sources_by_id.get(source_id)
+            if source:
+                stripped = source.name.rstrip()
+                if stripped != source.name:
+                    old_name = source.name
+                    source._name = stripped
+                    self._mixer.sources_by_name.pop(old_name, None)
+                    self._mixer.sources_by_name[stripped] = source
+                    _LOGGER.debug("Stripped runtime source name: %r → %r", old_name, stripped)
         for entity in self.mixer_zone_entities.values():
             entity.update_source_list()
         for entity in self.mixer_group_entities.values():

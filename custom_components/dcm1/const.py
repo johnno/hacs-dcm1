@@ -16,6 +16,8 @@ CONF_PAGING_STAGE_BEFORE_PLAY = "paging_stage_before_play"
 
 CONF_INPUT_VOLUME_DEFAULTS = "input_volume_defaults"
 
+CONF_STRIP_SOURCE_NAME_SPACES = "strip_source_name_spaces"
+
 DEFAULT_PAGING_POST_DELAY_MS = 2500
 
 # Dispatcher signal fired when any zone's paging inclusion flag changes.
