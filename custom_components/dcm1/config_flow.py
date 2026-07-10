@@ -171,7 +171,7 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "volume_db_range_hint": "Attenuation range for volume slider. Higher values = more range (e.g., 40 dB means 0% = -40dB, 50% = -20dB, 100% = 0dB)",
                 "paging_usb_device_hint": "ALSA device name (e.g., 'hw:1,0') or CoreAudio device name. Leave empty for system default.",
-                "input_volume_defaults_hint": "One rule per line: zone,source,volume[,lock] — zone: 1-8, g1-g4, or * (all); source: 1-8 or *; volume: 0-100; lock: true/false",
+                "input_volume_defaults_hint": "One rule per line: zone,source,max[,min[,default]] — zone: 1-8, g1-g4, or *; source: 1-8 or *; max: 0-100; min: 0-100 (default 0); default: 0-100 (default = midpoint of min/max)",
             },
         )
 

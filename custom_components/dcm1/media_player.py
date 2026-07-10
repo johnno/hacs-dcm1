@@ -226,11 +226,12 @@ async def _run_audio_cmd(cmd: list[str], logger) -> None:
 def _parse_input_volume_defaults(text: str) -> list[dict]:
     """Parse per-input volume default rules from a multiline text string.
 
-    Format (one rule per line): zone,source,volume[,lock]
-      zone:   zone number 1-8, group prefix g1-g4, or * for all outputs
-      source: source number 1-8, or * for all sources
-      volume: integer 0-100 (percent)
-      lock:   optional true/false (default false)
+    Format (one rule per line): zone,source,max[,min[,default]]
+      zone:    zone number 1-8, group prefix g1-g4, or * for all outputs
+      source:  source number 1-8, or * for all sources
+      max:     maximum allowed volume 0-100 (percent)
+      min:     optional minimum allowed volume 0-100 (default 0)
+      default: optional default volume on source switch 0-100 (default = midpoint of min/max)
 
     Lines beginning with # and blank lines are ignored.
     """
@@ -246,11 +247,26 @@ def _parse_input_volume_defaults(text: str) -> list[dict]:
         zone = parts[0].lower()
         source = parts[1].strip()
         try:
-            volume_pct = int(parts[2])
+            max_pct = int(parts[2])
         except ValueError:
-            _LOGGER.warning("input_volume_defaults: invalid volume in rule: %s", line)
+            _LOGGER.warning("input_volume_defaults: invalid max volume in rule: %s", line)
             continue
-        lock = len(parts) >= 4 and parts[3].strip().lower() == "true"
+        min_pct = 0
+        if len(parts) >= 4 and parts[3].strip():
+            try:
+                min_pct = int(parts[3])
+            except ValueError:
+                _LOGGER.warning("input_volume_defaults: invalid min volume in rule: %s", line)
+                continue
+        max_vol = max(0.0, min(1.0, max_pct / 100.0))
+        min_vol = max(0.0, min(max_vol, min_pct / 100.0))
+        default_vol = (min_vol + max_vol) / 2.0
+        if len(parts) >= 5 and parts[4].strip():
+            try:
+                default_vol = max(min_vol, min(max_vol, int(parts[4]) / 100.0))
+            except ValueError:
+                _LOGGER.warning("input_volume_defaults: invalid default volume in rule: %s", line)
+                continue
         if zone != "*" and not zone.isdigit() and not (
             zone.startswith("g") and zone[1:].isdigit()
         ):
@@ -266,14 +282,13 @@ def _parse_input_volume_defaults(text: str) -> list[dict]:
                     "input_volume_defaults: invalid source '%s' in rule: %s", source, line
                 )
                 continue
-        volume = max(0.0, min(1.0, volume_pct / 100.0))
-        rules.append({"zone": zone, "source": source, "volume": volume, "lock": lock})
+        rules.append({"zone": zone, "source": source, "max": max_vol, "min": min_vol, "default": default_vol})
     return rules
 
 
 def _find_default_volume(
     defaults: list[dict], zone_key: str, source_id: int
-) -> tuple[float, bool] | None:
+) -> tuple[float, float, float] | None:
     """Find the best-matching default volume rule for a (zone, source) pair.
 
     Priority (most specific wins):
@@ -282,7 +297,7 @@ def _find_default_volume(
       3. exact zone + wildcard source (*)
       4. wildcard zone (*) + wildcard source (*)
 
-    Returns (volume_0_to_1, lock) or None if no rule matches.
+    Returns (default_vol, min_vol, max_vol) or None if no rule matches.
     """
     source_str = str(source_id)
     for z, s in (
@@ -293,7 +308,7 @@ def _find_default_volume(
     ):
         for rule in defaults:
             if rule["zone"] == z and rule["source"] == s:
-                return rule["volume"], rule["lock"]
+                return rule["default"], rule["min"], rule["max"]
     return None
 
 
@@ -522,7 +537,9 @@ class MixerZone(MediaPlayerEntity):
         self._paging_bus_entity: PagingBus | None = paging_bus_entity
         self._input_volume_defaults: list[dict] = input_volume_defaults or []
         self._zone_key: str = str(zone_id)
-        self._source_locked_volume: float | None = None
+        self._source_default_volume: float | None = None
+        self._source_min_volume: float | None = None
+        self._source_max_volume: float | None = None
         self._applying_default_volume: bool = False
         
         _LOGGER.debug(f"Zone {zone_id} enabled_line_inputs: {self._enabled_line_inputs}")
@@ -617,29 +634,28 @@ class MixerZone(MediaPlayerEntity):
         """Apply configured default volume when switching to this source."""
         result = _find_default_volume(self._input_volume_defaults, self._zone_key, source_id)
         if result is None:
-            self._source_locked_volume = None
-            self.schedule_update_ha_state()  # Restore VOLUME_SET feature
+            self._source_default_volume = None
+            self._source_min_volume = None
+            self._source_max_volume = None
+            self.schedule_update_ha_state()
             return
-        volume, lock = result
-        self._source_locked_volume = volume if lock else None
-        # Compute target raw level to compare against current device level
-        if volume == 0.0:
-            target_raw = self._volume_db_range
-        else:
-            target_raw = round(self._volume_db_range * (1.0 - volume))
-            target_raw = max(0, min(self._volume_db_range, target_raw))
-        # Skip if device is already at the correct default level.
-        # This prevents heartbeat source re-confirmations from re-applying the default
-        # every ~10s and causing attribute churn / card flashing.
-        if self._raw_volume_level == target_raw:
-            return
+        default_vol, min_vol, max_vol = result
+        self._source_default_volume = default_vol
+        self._source_min_volume = min_vol
+        self._source_max_volume = max_vol
+        # Only apply default if current volume is outside the allowed range.
+        if self._raw_volume_level is not None:
+            max_raw = self._volume_db_range if max_vol == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - max_vol))))
+            min_raw = self._volume_db_range if min_vol == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - min_vol))))
+            if max_raw <= self._raw_volume_level <= min_raw:
+                return  # Already within allowed range
         _LOGGER.info(
-            "Zone %s: applying default volume %.0f%% for source %s%s",
-            self.zone_id, volume * 100, source_id, " (locked)" if lock else "",
+            "Zone %s: applying default volume %.0f%% for source %s (range [%.0f%%-%.0f%%])",
+            self.zone_id, default_vol * 100, source_id, min_vol * 100, max_vol * 100,
         )
         self._applying_default_volume = True
         try:
-            self.set_volume_level(volume)
+            self.set_volume_level(default_vol)
         finally:
             self._applying_default_volume = False
 
@@ -721,15 +737,17 @@ class MixerZone(MediaPlayerEntity):
                     )
                     return
         
-        # Lock enforcement: if source is locked to a specific volume, re-apply if device drifted
-        if self._source_locked_volume is not None and level != "mute":
-            locked_raw = round(self._volume_db_range * (1.0 - self._source_locked_volume))
-            if level_int != locked_raw:
-                _LOGGER.debug(
-                    "Zone %s: volume drifted from lock (device=%s, expected=%s); re-applying",
-                    self.zone_id, level_int, locked_raw,
-                )
-                self._mixer.set_zone_volume(zone_id=self.zone_id, level=locked_raw)
+        # Range enforcement: clamp if device drifted outside allowed range
+        if self._source_min_volume is not None and level != "mute":
+            max_raw = self._volume_db_range if self._source_max_volume == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - self._source_max_volume))))
+            min_raw = self._volume_db_range if self._source_min_volume == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - self._source_min_volume))))
+            if level_int < max_raw:
+                _LOGGER.debug("Zone %s: volume above max (%.0f%%), clamping", self.zone_id, self._source_max_volume * 100)
+                self._mixer.set_zone_volume(zone_id=self.zone_id, level=max_raw)
+                return
+            elif level_int > min_raw:
+                _LOGGER.debug("Zone %s: volume below min (%.0f%%), clamping", self.zone_id, self._source_min_volume * 100)
+                self._mixer.set_zone_volume(zone_id=self.zone_id, level=min_raw)
                 return
 
         # Response accepted - now modify state
@@ -800,31 +818,28 @@ class MixerZone(MediaPlayerEntity):
 
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
-        if self._source_locked_volume is not None and not self._applying_default_volume:
-            locked_volume = self._source_locked_volume
-            if volume == locked_volume:
-                return  # Already at locked position
-            # Accept the drag temporarily so HA sees a real state change (locked→drag).
-            # Set _pending_volume to the locked level so when DCM1 confirms the
-            # re-asserted locked command, maybe_update_volume_level_from_device
-            # commits the snap-back (drag→locked) as a second state change.
-            # This is the same mechanism as normal volume changes — no async tricks.
-            if locked_volume == 0.0:
-                locked_raw = self._volume_db_range
+        if self._source_min_volume is not None and not self._applying_default_volume:
+            min_vol = self._source_min_volume
+            max_vol = self._source_max_volume
+            if volume < min_vol:
+                clamped = min_vol
+            elif volume > max_vol:
+                clamped = max_vol
             else:
-                locked_raw = round(self._volume_db_range * (1.0 - locked_volume))
-                locked_raw = max(0, min(self._volume_db_range, locked_raw))
-            _LOGGER.debug(
-                "Zone %s: locked at %.0f%% — briefly showing %.0f%% then snapping back on DCM1 confirm",
-                self.zone_id, locked_volume * 100, volume * 100,
-            )
-            self._pending_volume = locked_volume
-            self._pending_raw_volume_level = locked_raw
-            self._pending_volume_rejected_count = 0
-            self._attr_volume_level = volume  # Show drag briefly
-            self.schedule_update_ha_state()   # Fires state_changed: locked→drag
-            self._mixer.set_zone_volume(zone_id=self.zone_id, level=locked_raw)  # Re-assert lock
-            return
+                clamped = None  # In range — allow through
+            if clamped is not None:
+                clamped_raw = self._volume_db_range if clamped == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - clamped))))
+                _LOGGER.debug(
+                    "Zone %s: clamping %.0f%% to range [%.0f%%-%.0f%%] → %.0f%%",
+                    self.zone_id, volume * 100, min_vol * 100, max_vol * 100, clamped * 100,
+                )
+                self._pending_volume = clamped
+                self._pending_raw_volume_level = clamped_raw
+                self._pending_volume_rejected_count = 0
+                self._attr_volume_level = volume  # Show drag briefly; DCM1 confirm snaps to clamped
+                self.schedule_update_ha_state()
+                self._mixer.set_zone_volume(zone_id=self.zone_id, level=clamped_raw)
+                return
         # Convert HA volume (0.0-1.0) to DCM1 level
         # Linear mapping in dB space: level = range * (1 - volume)
         # Example with range=40: 0%→40 (-40dB), 50%→20 (-20dB), 100%→0 (0dB)
@@ -868,16 +883,20 @@ class MixerZone(MediaPlayerEntity):
             attrs["dcm1_pending_volume"] = round(self._pending_volume, 4)
         if self._volume_level is not None:
             attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
-        # default_volume_level: the configured default for the current source (always, regardless of lock)
+        # default/min/max volume levels for the current source rule
         _default_vol = None
+        _min_vol = None
+        _max_vol = None
         if self._input_volume_defaults and self._attr_source:
             _src = self._mixer.sources_by_name.get(self._attr_source)
             if _src:
                 _res = _find_default_volume(self._input_volume_defaults, self._zone_key, _src.id)
                 if _res is not None:
-                    _default_vol, _ = _res
-        attrs["volume_locked"] = self._source_locked_volume is not None
+                    _default_vol, _min_vol, _max_vol = _res
+        attrs["volume_locked"] = self._source_min_volume is not None
         attrs["default_volume_level"] = round(_default_vol, 4) if _default_vol is not None else None
+        attrs["min_volume_level"] = round(_min_vol, 4) if _min_vol is not None else None
+        attrs["max_volume_level"] = round(_max_vol, 4) if _max_vol is not None else None
         mask = getattr(self._mixer, "paging_status", None)
         attrs["raw_paging_status"] = mask
         attrs["paging_bus_busy"] = bool(mask and "X" in mask)
@@ -892,12 +911,13 @@ class MixerZone(MediaPlayerEntity):
             self._pre_mute_raw_volume = self._raw_volume_level
             self._mixer.set_zone_volume(zone_id=self.zone_id, level=62)  # 62 = mute
         else:
-            # If source is locked, always restore to locked level on unmute
-            if self._source_locked_volume is not None:
-                locked_raw = round(self._volume_db_range * (1.0 - self._source_locked_volume))
+            # If source has a volume range, restore to the configured default on unmute
+            if self._source_min_volume is not None:
+                default_vol = self._source_default_volume
+                default_raw = self._volume_db_range if default_vol == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - default_vol))))
                 self._pre_mute_volume = None
                 self._pre_mute_raw_volume = None
-                self._mixer.set_zone_volume(zone_id=self.zone_id, level=locked_raw)
+                self._mixer.set_zone_volume(zone_id=self.zone_id, level=default_raw)
                 return
             # Unmute to last known level before muting, or default to mid-range
             if self._pre_mute_raw_volume is not None:
@@ -914,17 +934,18 @@ class MixerZone(MediaPlayerEntity):
             self._mixer.set_zone_volume(zone_id=self.zone_id, level=level)
 
     async def async_set_volume_level(self, volume: float) -> None:
-        """Called by HA for user volume changes; refreshes lock cache then delegates."""
-        if self._source_locked_volume is None and self._input_volume_defaults and self._attr_source:
+        """Called by HA for user volume changes; refreshes range cache then delegates."""
+        if self._source_min_volume is None and self._input_volume_defaults and self._attr_source:
             source_obj = self._mixer.sources_by_name.get(self._attr_source)
             if source_obj:
                 result = _find_default_volume(
                     self._input_volume_defaults, self._zone_key, source_obj.id
                 )
                 if result is not None:
-                    default_vol, lock = result
-                    if lock:
-                        self._source_locked_volume = default_vol
+                    default_vol, min_vol, max_vol = result
+                    self._source_default_volume = default_vol
+                    self._source_min_volume = min_vol
+                    self._source_max_volume = max_vol
         self.set_volume_level(volume)
 
     async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
@@ -972,7 +993,9 @@ class MixerGroup(MediaPlayerEntity):
         self._paging_bus_entity: PagingBus | None = paging_bus_entity
         self._input_volume_defaults: list[dict] = input_volume_defaults or []
         self._zone_key: str = f"g{group_id}"
-        self._source_locked_volume: float | None = None
+        self._source_default_volume: float | None = None
+        self._source_min_volume: float | None = None
+        self._source_max_volume: float | None = None
         self._applying_default_volume: bool = False
         
         _LOGGER.debug(f"Group {group_id} enabled_line_inputs: {self._enabled_line_inputs}")
@@ -1075,25 +1098,27 @@ class MixerGroup(MediaPlayerEntity):
         """Apply configured default volume when switching to this source."""
         result = _find_default_volume(self._input_volume_defaults, self._zone_key, source_id)
         if result is None:
-            self._source_locked_volume = None
-            self.schedule_update_ha_state()  # Restore VOLUME_SET feature
+            self._source_default_volume = None
+            self._source_min_volume = None
+            self._source_max_volume = None
+            self.schedule_update_ha_state()
             return
-        volume, lock = result
-        self._source_locked_volume = volume if lock else None
-        if volume == 0.0:
-            target_raw = self._volume_db_range
-        else:
-            target_raw = round(self._volume_db_range * (1.0 - volume))
-            target_raw = max(0, min(self._volume_db_range, target_raw))
-        if self._raw_volume_level == target_raw:
-            return
+        default_vol, min_vol, max_vol = result
+        self._source_default_volume = default_vol
+        self._source_min_volume = min_vol
+        self._source_max_volume = max_vol
+        if self._raw_volume_level is not None:
+            max_raw = self._volume_db_range if max_vol == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - max_vol))))
+            min_raw = self._volume_db_range if min_vol == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - min_vol))))
+            if max_raw <= self._raw_volume_level <= min_raw:
+                return  # Already within allowed range
         _LOGGER.info(
-            "Group %s: applying default volume %.0f%% for source %s%s",
-            self.group_id, volume * 100, source_id, " (locked)" if lock else "",
+            "Group %s: applying default volume %.0f%% for source %s (range [%.0f%%-%.0f%%])",
+            self.group_id, default_vol * 100, source_id, min_vol * 100, max_vol * 100,
         )
         self._applying_default_volume = True
         try:
-            self.set_volume_level(volume)
+            self.set_volume_level(default_vol)
         finally:
             self._applying_default_volume = False
 
@@ -1168,15 +1193,17 @@ class MixerGroup(MediaPlayerEntity):
                     )
                     return
         
-        # Lock enforcement: if source is locked to a specific volume, re-apply if device drifted
-        if self._source_locked_volume is not None and level != "mute":
-            locked_raw = round(self._volume_db_range * (1.0 - self._source_locked_volume))
-            if level_int != locked_raw:
-                _LOGGER.debug(
-                    "Group %s: volume drifted from lock (device=%s, expected=%s); re-applying",
-                    self.group_id, level_int, locked_raw,
-                )
-                self._mixer.set_group_volume(group_id=self.group_id, level=locked_raw)
+        # Range enforcement: clamp if device drifted outside allowed range
+        if self._source_min_volume is not None and level != "mute":
+            max_raw = self._volume_db_range if self._source_max_volume == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - self._source_max_volume))))
+            min_raw = self._volume_db_range if self._source_min_volume == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - self._source_min_volume))))
+            if level_int < max_raw:
+                _LOGGER.debug("Group %s: volume above max (%.0f%%), clamping", self.group_id, self._source_max_volume * 100)
+                self._mixer.set_group_volume(group_id=self.group_id, level=max_raw)
+                return
+            elif level_int > min_raw:
+                _LOGGER.debug("Group %s: volume below min (%.0f%%), clamping", self.group_id, self._source_min_volume * 100)
+                self._mixer.set_group_volume(group_id=self.group_id, level=min_raw)
                 return
 
         # Response accepted - now modify state
@@ -1250,26 +1277,28 @@ class MixerGroup(MediaPlayerEntity):
 
     def set_volume_level(self, volume: float) -> None:
         """Set volume level (0.0 to 1.0)."""
-        if self._source_locked_volume is not None and not self._applying_default_volume:
-            locked_volume = self._source_locked_volume
-            if volume == locked_volume:
-                return
-            if locked_volume == 0.0:
-                locked_raw = self._volume_db_range
+        if self._source_min_volume is not None and not self._applying_default_volume:
+            min_vol = self._source_min_volume
+            max_vol = self._source_max_volume
+            if volume < min_vol:
+                clamped = min_vol
+            elif volume > max_vol:
+                clamped = max_vol
             else:
-                locked_raw = round(self._volume_db_range * (1.0 - locked_volume))
-                locked_raw = max(0, min(self._volume_db_range, locked_raw))
-            _LOGGER.debug(
-                "Group %s: locked at %.0f%% — briefly showing %.0f%% then snapping back on DCM1 confirm",
-                self.group_id, locked_volume * 100, volume * 100,
-            )
-            self._pending_volume = locked_volume
-            self._pending_raw_volume_level = locked_raw
-            self._pending_volume_rejected_count = 0
-            self._attr_volume_level = volume
-            self.schedule_update_ha_state()   # Fires state_changed: locked→drag
-            self._mixer.set_group_volume(group_id=self.group_id, level=locked_raw)  # Re-assert lock
-            return
+                clamped = None
+            if clamped is not None:
+                clamped_raw = self._volume_db_range if clamped == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - clamped))))
+                _LOGGER.debug(
+                    "Group %s: clamping %.0f%% to range [%.0f%%-%.0f%%] → %.0f%%",
+                    self.group_id, volume * 100, min_vol * 100, max_vol * 100, clamped * 100,
+                )
+                self._pending_volume = clamped
+                self._pending_raw_volume_level = clamped_raw
+                self._pending_volume_rejected_count = 0
+                self._attr_volume_level = volume
+                self.schedule_update_ha_state()
+                self._mixer.set_group_volume(group_id=self.group_id, level=clamped_raw)
+                return
         # Convert HA volume (0.0-1.0) to DCM1 level
         # Linear mapping in dB space: level = range * (1 - volume)
         # Example with range=40: 0%→40 (-40dB), 50%→20 (-20dB), 100%→0 (0dB)
@@ -1314,14 +1343,18 @@ class MixerGroup(MediaPlayerEntity):
         if self._volume_level is not None:
             attrs["dcm1_confirmed_volume"] = round(self._volume_level, 4)
         _default_vol = None
+        _min_vol = None
+        _max_vol = None
         if self._input_volume_defaults and self._attr_source:
             _src = self._mixer.sources_by_name.get(self._attr_source)
             if _src:
                 _res = _find_default_volume(self._input_volume_defaults, self._zone_key, _src.id)
                 if _res is not None:
-                    _default_vol, _ = _res
-        attrs["volume_locked"] = self._source_locked_volume is not None
+                    _default_vol, _min_vol, _max_vol = _res
+        attrs["volume_locked"] = self._source_min_volume is not None
         attrs["default_volume_level"] = round(_default_vol, 4) if _default_vol is not None else None
+        attrs["min_volume_level"] = round(_min_vol, 4) if _min_vol is not None else None
+        attrs["max_volume_level"] = round(_max_vol, 4) if _max_vol is not None else None
         mask = getattr(self._mixer, "paging_status", None)
         attrs["raw_paging_status"] = mask
         attrs["paging_bus_busy"] = bool(mask and "X" in mask)
@@ -1340,12 +1373,13 @@ class MixerGroup(MediaPlayerEntity):
             self._pre_mute_raw_volume = self._raw_volume_level
             self._mixer.set_group_volume(group_id=self.group_id, level=62)  # 62 = mute
         else:
-            # If source is locked, always restore to locked level on unmute
-            if self._source_locked_volume is not None:
-                locked_raw = round(self._volume_db_range * (1.0 - self._source_locked_volume))
+            # If source has a volume range, restore to the configured default on unmute
+            if self._source_min_volume is not None:
+                default_vol = self._source_default_volume
+                default_raw = self._volume_db_range if default_vol == 0.0 else max(0, min(self._volume_db_range, round(self._volume_db_range * (1.0 - default_vol))))
                 self._pre_mute_volume = None
                 self._pre_mute_raw_volume = None
-                self._mixer.set_group_volume(group_id=self.group_id, level=locked_raw)
+                self._mixer.set_group_volume(group_id=self.group_id, level=default_raw)
                 return
             # Unmute to last known level before muting, or default to mid-range
             if self._pre_mute_raw_volume is not None:
@@ -1362,17 +1396,18 @@ class MixerGroup(MediaPlayerEntity):
             self._mixer.set_group_volume(group_id=self.group_id, level=level)
 
     async def async_set_volume_level(self, volume: float) -> None:
-        """Called by HA for user volume changes; refreshes lock cache then delegates."""
-        if self._source_locked_volume is None and self._input_volume_defaults and self._attr_source:
+        """Called by HA for user volume changes; refreshes range cache then delegates."""
+        if self._source_min_volume is None and self._input_volume_defaults and self._attr_source:
             source_obj = self._mixer.sources_by_name.get(self._attr_source)
             if source_obj:
                 result = _find_default_volume(
                     self._input_volume_defaults, self._zone_key, source_obj.id
                 )
                 if result is not None:
-                    default_vol, lock = result
-                    if lock:
-                        self._source_locked_volume = default_vol
+                    default_vol, min_vol, max_vol = result
+                    self._source_default_volume = default_vol
+                    self._source_min_volume = min_vol
+                    self._source_max_volume = max_vol
         self.set_volume_level(volume)
 
     async def async_browse_media(self, media_content_type: str | None = None, media_content_id: str | None = None) -> BrowseMedia:
